@@ -57,6 +57,34 @@ jobs:
         with: { go-version-file: go.mod, check-latest: true, cache: true }
       - run: GOOS=js GOARCH=wasm go vet ./...
 
+  # --- http half (creds, session, rendezvous): fuzz and js/wasm test lanes ---
+  fuzz-http:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: FuzzParse, pkg: ./creds }
+          - { target: FuzzKeyringVerify, pkg: ./creds }
+          - { target: FuzzVerify, pkg: ./session }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - run: go test -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 30s ${{ matrix.pkg }}
+
+  wasm-test:
+    name: js/wasm test (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+      - run: GOOS=js GOARCH=wasm go test -count=1 -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./rendezvous/client
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:
