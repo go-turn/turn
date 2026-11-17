@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/go-turn/turn/server"
 	"github.com/go-turn/turn/stun"
 )
 
@@ -66,6 +68,54 @@ func TestRunRelayServesBindingAndRefusesAuthless(t *testing.T) {
 	}
 }
 
+func TestRunRelayProxyProtocolFrom(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	stop, err := runRelay(context.Background(), relayConfig{
+		Realm: "turn.test",
+		Auth:  func(string) (string, bool) { return "", false },
+		Options: relayOptions{RelayIP: "127.0.0.1", TURNTCPListen: addr,
+			ProxyFrom: []string{"127.0.0.1/32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	var c net.Conn
+	for i := 0; i < 20; i++ { // the listener starts in a goroutine
+		if c, err = net.Dial("tcp", addr); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	real := netip.MustParseAddrPort("198.51.100.7:4242")
+	b := server.AppendProxyHeaderV2(nil, real, netip.MustParseAddrPort(addr))
+	req := stun.New(stun.ClassRequest, stun.MethodBinding)
+	rb, _ := req.Encode()
+	c.Write(append(b, rb...))
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 512)
+	n, err := c.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := stun.Decode(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Addr(stun.AttrXORMappedAddress); got != real {
+		t.Fatalf("mapped %v, want the header's %v", got, real)
+	}
+}
+
 func TestRunRelayOffWithoutListenFlags(t *testing.T) {
 	stop, err := runRelay(context.Background(), relayConfig{Realm: "r", Auth: func(string) (string, bool) { return "", false }})
 	if err != nil {
@@ -90,6 +140,10 @@ func TestRelayOptionsValidate(t *testing.T) {
 		{"turns needs cert", relayOptions{RelayIP: "203.0.113.5", TURNSListen: ":443"}, "", false},
 		{"turns with cert", relayOptions{RelayIP: "203.0.113.5", TURNSListen: ":443"}, "c", true},
 		{"range inverted", relayOptions{RelayIP: "203.0.113.5", STUNListen: ":1", PortMin: 9, PortMax: 3}, "", false},
+		{"proxy needs a stream listener", relayOptions{RelayIP: "203.0.113.5", STUNListen: ":3478", ProxyFrom: []string{"127.0.0.1/32"}}, "", false},
+		{"proxy with tcp", relayOptions{RelayIP: "203.0.113.5", TURNTCPListen: "127.0.0.1:3478", ProxyFrom: []string{"127.0.0.1/32"}}, "", true},
+		{"proxy bad prefix", relayOptions{RelayIP: "203.0.113.5", TURNTCPListen: ":3478", ProxyFrom: []string{"127.0.0.1"}}, "", false},
+		{"proxy mapped prefix", relayOptions{RelayIP: "203.0.113.5", TURNTCPListen: ":3478", ProxyFrom: []string{"::ffff:127.0.0.0/104"}}, "", false},
 		{"range too high", relayOptions{RelayIP: "203.0.113.5", STUNListen: ":1", PortMax: 70000}, "", false},
 	}
 	for _, c := range cases {

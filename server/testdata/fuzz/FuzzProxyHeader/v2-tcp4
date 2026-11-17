@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\r\n\r\n\x00\r\nQUIT\n!\x11\x00\f\xc66d\a\xcb\x00q\x05\x10\x92\x0d\x96")

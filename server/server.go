@@ -243,8 +243,21 @@ func (s *Server) isDone() bool {
 }
 
 // ServeListener serves STUN and TURN over TCP connections accepted from ln
-// until it is closed. ln may already be a TLS listener.
-func (s *Server) ServeListener(ln net.Listener) error {
+// until it is closed. With Config.ProxyProtocolFrom set, connections from the
+// listed sources must start with a PROXY protocol header.
+func (s *Server) ServeListener(ln net.Listener) error { return s.serveStream(ln, nil) }
+
+// ServeTLS serves TURN over TLS (turns:) on ln with cfg. With
+// Config.ProxyProtocolFrom set, a PROXY protocol header from a listed source
+// is read before the TLS handshake (it precedes the ClientHello).
+func (s *Server) ServeTLS(ln net.Listener, cfg *tls.Config) error {
+	if cfg == nil {
+		return errors.New("server: ServeTLS needs a tls.Config")
+	}
+	return s.serveStream(ln, cfg)
+}
+
+func (s *Server) serveStream(ln net.Listener, tlsCfg *tls.Config) error {
 	if !s.track(ln) {
 		return ErrClosed
 	}
@@ -276,22 +289,49 @@ func (s *Server) ServeListener(ln net.Listener) error {
 			return ErrClosed
 		}
 		s.wg.Add(1)
-		go s.serveConn(c)
+		go s.serveConn(c, tlsCfg)
 	}
 }
 
-// ServeTLS serves TURN over TLS (turns:) on ln with cfg.
-func (s *Server) ServeTLS(ln net.Listener, cfg *tls.Config) error {
-	return s.ServeListener(tls.NewListener(ln, cfg))
+// proxyTrusted reports whether a connection from a may carry a PROXY header.
+func (s *Server) proxyTrusted(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range s.cfg.ProxyProtocolFrom {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
-func (s *Server) serveConn(c net.Conn) {
+func (s *Server) serveConn(raw net.Conn, tlsCfg *tls.Config) {
 	defer s.wg.Done()
 	defer s.conns.Add(-1)
-	defer s.untrack(c)
-	defer c.Close()
-	tr := &streamTransport{conn: c, addr: addrPortOf(c.LocalAddr())}
-	remote := addrPortOf(c.RemoteAddr())
+	defer s.untrack(raw)
+	defer raw.Close()
+	remote := addrPortOf(raw.RemoteAddr())
+	var c net.Conn = raw
+	if s.proxyTrusted(remote.Addr()) {
+		// The header is read straight off the socket, before any TLS
+		// handshake, under a bounded size and the handshake deadline.
+		raw.SetReadDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
+		h, err := readProxyHeader(raw)
+		if err != nil {
+			s.cfg.Logger.Debug("PROXY header refused", "from", remote, "err", err)
+			s.st.dropped.Add(1)
+			return
+		}
+		if !h.Local {
+			s.cfg.Logger.Debug("PROXY header", "proxy", remote, "client", h.Src)
+			remote = h.Src
+		}
+	}
+	// A header from any other source is not read as one: the bytes reach the
+	// STUN framer (or the TLS handshake), which refuses them and closes.
+	if tlsCfg != nil {
+		c = tls.Server(raw, tlsCfg)
+	}
+	tr := &streamTransport{conn: c, addr: addrPortOf(raw.LocalAddr())}
 	key := fiveTuple{client: remote, server: tr.addr, proto: protoTCP}
 	defer func() {
 		if a := s.lookup(key); a != nil {

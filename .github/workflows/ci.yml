@@ -57,6 +57,7 @@ jobs:
         include:
           - { pkg: ./stun, target: FuzzDecode }
           - { pkg: ./stun, target: FuzzChannelData }
+          - { pkg: ./server, target: FuzzProxyHeader }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
