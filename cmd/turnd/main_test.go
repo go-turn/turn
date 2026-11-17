@@ -20,6 +20,12 @@ import (
 
 	"github.com/go-turn/turn/creds"
 	"github.com/go-turn/turn/internal/fakeidp"
+	turnv1 "github.com/go-turn/turn/proto/turn/v1"
+	"github.com/go-turn/turn/rendezvous/client"
+	wstransport "github.com/grpc-transports/websocket"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 const origin = "https://go-tex.github.io"
@@ -135,27 +141,41 @@ func (d *daemon) login(t *testing.T) (token, target string) {
 	return msg.Token, target
 }
 
-func (d *daemon) do(t *testing.T, method, path, token string, body any, hdr ...string) (int, []byte) {
+// get is a plain HTTP GET: the only HTTP left besides the WebSocket is /login,
+// /callback and /healthz.
+func (d *daemon) get(t *testing.T, path string) (int, string) {
 	t.Helper()
-	var rd io.Reader
-	if body != nil {
-		j, _ := json.Marshal(body)
-		rd = bytes.NewReader(j)
-	}
-	r, _ := http.NewRequest(method, d.base+path, rd)
-	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
-	}
-	for i := 0; i+1 < len(hdr); i += 2 {
-		r.Header.Set(hdr[i], hdr[i+1])
-	}
-	resp, err := http.DefaultClient.Do(r)
+	resp, err := http.Get(d.base + path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, b
+	return resp.StatusCode, string(b)
+}
+
+// dial opens the gRPC WebSocket as a browser of the given origin would ("" is a native client).
+func (d *daemon) dial(t *testing.T, origin string) turnv1.TurndClient {
+	t.Helper()
+	cfg := wstransport.ClientConfig{}
+	if origin != "" {
+		cfg.HTTPHeader = http.Header{"Origin": {origin}}
+	}
+	cc, err := client.Dial(d.base, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cc.Close() })
+	return turnv1.NewTurndClient(cc)
+}
+
+func rctx(t *testing.T, token string) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	if token == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 }
 
 func TestEndToEnd(t *testing.T) {
@@ -172,30 +192,61 @@ func TestEndToEnd(t *testing.T) {
 	if target != origin {
 		t.Fatalf("target %q", target)
 	}
-	// the session token opens a room and mints credentials
-	st, b := d.do(t, "POST", "/rooms", token, nil, "Origin", origin)
-	var room struct {
-		Room, Token string
+	// the session token opens a room; a guest knocks, the host admits it, they
+	// exchange a message and the guest gets credentials: all over the WebSocket.
+	rpc := d.dial(t, origin)
+	room, err := rpc.CreateRoom(rctx(t, token), &turnv1.CreateRoomRequest{})
+	if err != nil || len(room.Room) != 32 {
+		t.Fatalf("create %v %v", room, err)
 	}
-	if st != 201 || json.Unmarshal(b, &room) != nil || len(room.Room) != 32 {
-		t.Fatalf("create %d %s", st, b)
+	hctx := metadata.AppendToOutgoingContext(rctx(t, room.Token), "x-turn-room", room.Room)
+	hs, err := rpc.Room(hctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	st, b = d.do(t, "POST", "/rooms/"+room.Room+"/join", "", nil, "Origin", origin)
-	var guest struct{ Peer, Token string }
-	if st != 201 || json.Unmarshal(b, &guest) != nil {
-		t.Fatalf("join %d %s", st, b)
+	guest, err := rpc.JoinRoom(rctx(t, ""), &turnv1.JoinRoomRequest{Room: room.Room, Name: "Bob"})
+	if err != nil || !guest.Pending {
+		t.Fatalf("join %v %v", guest, err)
 	}
-	if st, b := d.do(t, "POST", "/rooms/"+room.Room+"/messages", guest.Token,
-		map[string]string{"from": guest.Peer, "to": "host", "kind": "answer", "body": "sdp"}); st != 204 {
-		t.Fatalf("message %d %s", st, b)
+	// pending: no credentials yet
+	if _, err := rpc.RoomCredentials(rctx(t, guest.Token), &turnv1.RoomRef{Room: room.Room}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("a pending guest got credentials: %v", err)
 	}
-	st, b = d.do(t, "POST", "/rooms/"+room.Room+"/credentials", guest.Token, nil)
-	var cr creds.Response
-	if st != 200 || json.Unmarshal(b, &cr) != nil || len(cr.ICEServers) != 2 {
-		t.Fatalf("guest credentials %d %s", st, b)
+	if e, err := hs.Recv(); err != nil || e.Kind != "sys.knock" || string(e.Body) != "Bob" {
+		t.Fatalf("%v %v", e, err)
 	}
-	turn := cr.ICEServers[1]
-	if turn.URLs[0] != "turn:turn.example:3478?transport=udp" {
+	if _, err := rpc.Admit(rctx(t, room.Token), &turnv1.DecideRequest{Room: room.Room, Peer: guest.Peer}); err != nil {
+		t.Fatal(err)
+	}
+	gctx := metadata.AppendToOutgoingContext(rctx(t, guest.Token), "x-turn-room", room.Room)
+	gs, err := rpc.Room(gctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, err := gs.Recv(); err != nil || e.Kind != "sys.admitted" {
+		t.Fatalf("%v %v", e, err)
+	}
+	if err := gs.Send(&turnv1.Envelope{From: guest.Peer, To: "host", Kind: "answer", Body: []byte("sdp")}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		e, err := hs.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind == "answer" {
+			if string(e.Body) != "sdp" {
+				t.Fatalf("%v", e)
+			}
+			break
+		}
+	}
+	cr, err := rpc.RoomCredentials(rctx(t, guest.Token), &turnv1.RoomRef{Room: room.Room})
+	if err != nil || len(cr.IceServers) != 2 {
+		t.Fatalf("guest credentials %v %v", cr, err)
+	}
+	turn := cr.IceServers[1]
+	if turn.Urls[0] != "turn:turn.example:3478?transport=udp" {
 		t.Fatalf("%+v", turn)
 	}
 	// the relay seam receives a hook that accepts exactly what was minted
@@ -217,18 +268,31 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("username leaks the name: %q", turn.Username)
 	}
 	// an issuer access token works on the API, an ID token does not
-	if st, b := d.do(t, "POST", "/credentials", d.idp.AccessToken("turnd-api"), nil); st != 200 {
-		t.Fatalf("access token: %d %s", st, b)
+	native := d.dial(t, "") // no Origin header: a native client
+	if _, err := native.Credentials(rctx(t, d.idp.AccessToken("turnd-api")), &turnv1.CredentialsRequest{}); err != nil {
+		t.Fatalf("access token: %v", err)
 	}
-	if st, _ := d.do(t, "POST", "/credentials", d.idp.IDToken("turnd-api"), nil); st != 401 {
-		t.Fatalf("ID token taken for an access token: %d", st)
+	if _, err := native.Credentials(rctx(t, d.idp.IDToken("turnd-api")), &turnv1.CredentialsRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ID token taken for an access token: %v", err)
 	}
-	if st, _ := d.do(t, "POST", "/credentials", "", nil); st != 401 {
-		t.Fatalf("no token: %d", st)
+	if _, err := native.Credentials(rctx(t, ""), &turnv1.CredentialsRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("no token: %v", err)
 	}
-	// a foreign origin is refused; so is a foreign login origin
-	if st, _ := d.do(t, "POST", "/rooms", token, nil, "Origin", "https://evil.example"); st != 403 {
-		t.Fatalf("foreign origin: %d", st)
+	// the exact origin is enforced at the WebSocket upgrade: a foreign origin, or
+	// the right host on another scheme, never gets a connection
+	for _, o := range []string{"https://evil.example", "http://go-tex.github.io", "https://go-tex.github.io:8443", "null"} {
+		if _, err := d.dial(t, o).Credentials(rctx(t, token), &turnv1.CredentialsRequest{}); status.Code(err) != codes.Unavailable {
+			t.Errorf("origin %q: %v", o, err)
+		}
+	}
+	if _, err := d.dial(t, origin).Credentials(rctx(t, token), &turnv1.CredentialsRequest{}); err != nil {
+		t.Fatalf("control, the allowed origin: %v", err)
+	}
+	// the REST API is gone
+	for _, p := range []string{"/rooms", "/credentials", "/rooms/x/events"} {
+		if st, _ := d.get(t, p); st != 404 && st != 405 {
+			t.Errorf("GET %s: %d", p, st)
+		}
 	}
 	jar, _ := cookiejar.New(nil)
 	c := *d.idp.Client()
@@ -248,13 +312,20 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("secret in the authorization URL: %s", loc)
 	}
 	// health
-	if st, b := d.do(t, "GET", "/healthz", "", nil); st != 200 || string(b) != "ok\n" {
+	if st, b := d.get(t, "/healthz"); st != 200 || b != "ok\n" {
 		t.Fatalf("healthz %d %q", st, b)
 	}
-	// an oversized body is refused by the cap, not read
-	big := strings.Repeat("a", 1<<20)
-	if st, _ := d.do(t, "POST", "/rooms/"+room.Room+"/messages", guest.Token, map[string]string{"from": guest.Peer, "to": "host", "kind": "x", "body": big}); st != 413 {
-		t.Fatalf("1 MiB body: %d", st)
+	// an oversized message is refused by the server's receive bound
+	if err := gs.Send(&turnv1.Envelope{From: guest.Peer, To: "host", Kind: "x", Body: make([]byte, 1<<20)}); err != nil {
+		t.Logf("send: %v", err) // the stream may already be refusing
+	}
+	for {
+		if _, err := gs.Recv(); err != nil {
+			if status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("1 MiB message: %v", err)
+			}
+			break
+		}
 	}
 }
 

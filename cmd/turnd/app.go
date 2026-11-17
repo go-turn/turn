@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +20,9 @@ import (
 	"github.com/go-turn/turn/creds"
 	"github.com/go-turn/turn/rendezvous"
 	"github.com/go-turn/turn/session"
+	wstransport "github.com/grpc-transports/websocket"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 // config is everything turnd is told. Every secret is a FILE path: a secret in
@@ -156,6 +161,8 @@ type app struct {
 	ring    *creds.Keyring
 	rv      *rendezvous.Server
 	secure  bool
+	gs      *grpc.Server
+	lis     net.Listener
 }
 
 // newApp reads the secrets, discovers the issuer and builds the handlers.
@@ -212,34 +219,71 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 			return nil, fmt.Errorf("access-token verifier: %w", err)
 		}
 	}
-	rv, err := rendezvous.New(rendezvous.Config{Auth: auth.Subject, Keyring: ring, STUN: cfg.STUNURLs, TURN: cfg.TURNURLs,
-		Origins: cfg.Origins, Limits: cfg.Limits, CredTTL: cfg.CredTTL})
+	rv, err := rendezvous.New(rendezvous.Config{Auth: auth.Authenticate, Keyring: ring, STUN: cfg.STUNURLs, TURN: cfg.TURNURLs,
+		Limits: cfg.Limits, CredTTL: cfg.CredTTL})
 	if err != nil {
 		return nil, err
 	}
+
+	// gRPC over a WebSocket: browsers cannot speak anything else.
+	h, lis := wstransport.HandlerListener(wstransport.ServerConfig{
+		Path:           GRPCPath,
+		OriginPatterns: originHosts(cfg.Origins),
+		OnUpgrade: func(r *http.Request) (any, error) {
+			// The exact origin, scheme and port included (the library's patterns
+			// match the host only). No Origin header is a native client.
+			if o := r.Header.Get("Origin"); o != "" && !slices.Contains(cfg.Origins, o) {
+				return nil, &wstransport.UpgradeError{Code: http.StatusForbidden, Message: "origin not allowed"}
+			}
+			return nil, nil
+		},
+		Logger: logger,
+	})
+	gs := grpc.NewServer(
+		grpc.Creds(wstransport.ServerCredentials()),
+		grpc.MaxRecvMsgSize(rv.MaxRecvMsgSize()),
+		grpc.MaxConcurrentStreams(32),
+		grpc.KeepaliveParams(keepalive.ServerParameters{Time: time.Minute, Timeout: 20 * time.Second}),
+	)
+	rv.Register(gs)
+	go func() { _ = gs.Serve(lis) }()
+
 	mux := http.NewServeMux()
 	login.Mount(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
-	mux.Handle("/", rv.Handler())
-	return &app{Handler: limitBody(mux), ring: ring, rv: rv, secure: secure}, nil
+	mux.Handle(GRPCPath, h)
+	return &app{Handler: mux, ring: ring, rv: rv, secure: secure, gs: gs, lis: lis}, nil
 }
 
-// limitBody caps every request body: no endpoint reads more than a message.
-func limitBody(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
-		next.ServeHTTP(w, r)
-	})
+// GRPCPath is where the gRPC WebSocket is served.
+const GRPCPath = "/grpc"
+
+// originHosts is the host part of each allowed origin, for the WebSocket
+// library's pattern check; OnUpgrade then compares the whole origin.
+func originHosts(origins []string) []string {
+	var hosts []string
+	for _, o := range origins {
+		if u, err := url.Parse(o); err == nil && u.Host != "" {
+			hosts = append(hosts, u.Host)
+		}
+	}
+	return hosts
 }
 
+// Close stops the gRPC server.
+func (a *app) Close() {
+	a.gs.Stop()
+	_ = a.lis.Close()
+}
+
+// newHTTPServer has no Read/WriteTimeout: they would cut the long-lived gRPC
+// WebSocket, and every other endpoint is a bodyless GET answered at once.
+// Slow headers are bounded by ReadHeaderTimeout, idle connections by IdleTimeout.
 func newHTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr: addr, Handler: h,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		// The event stream extends its own write deadline per write.
-		WriteTimeout:   30 * time.Second,
-		IdleTimeout:    120 * time.Second,
-		MaxHeaderBytes: 16 << 10,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
 }

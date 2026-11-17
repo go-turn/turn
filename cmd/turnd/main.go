@@ -102,6 +102,7 @@ func serve(ctx context.Context, cmd *cobra.Command, cfg config, ready func(strin
 	if err != nil {
 		return err
 	}
+	defer a.Close()
 	stopRelay, err := startRelay(ctx, relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil),
 		Options: cfg.Relay, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile})
 	if err != nil {

@@ -1,0 +1,127 @@
+// turnd's API. Served by a plain grpc.Server, over a WebSocket for browsers
+// (github.com/grpc-transports/websocket). Only /login, /callback and /healthz
+// are HTTP: an OIDC redirect cannot be an RPC.
+//
+// Authentication is gRPC metadata, never a URL or a message field:
+//
+//	authorization: Bearer <token>
+//
+// where the token is a turnd session token or an issuer access token
+// (Credentials, CreateRoom), or a room peer token (everything else).
+//
+// Status codes: UNAUTHENTICATED (no or bad token), PERMISSION_DENIED (the
+// token may not do this: a pending guest, a guest deciding), NOT_FOUND (no such
+// room or peer, or a dead token's room), INVALID_ARGUMENT (malformed),
+// ALREADY_EXISTS (a second stream for one peer), FAILED_PRECONDITION (already
+// admitted), RESOURCE_EXHAUSTED (a bound: message size, queue, guests, pending,
+// rooms per subject, credential requests), UNAVAILABLE (the server is full).
+syntax = "proto3";
+
+package turn.v1;
+
+option go_package = "github.com/go-turn/turn/proto/turn/v1;turnv1";
+
+service Turnd {
+  // Credentials mints TURN credentials for a logged-in person.
+  rpc Credentials(CredentialsRequest) returns (IceServers);
+
+  // CreateRoom opens a room as its host (session token).
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+
+  // JoinRoom knocks at a room with its ID (no token). The guest is PENDING: it
+  // may open the Room stream and receive, nothing else, until the host admits it.
+  rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+
+  // Admit lets a pending guest in; Deny refuses one (or removes an admitted
+  // one): its token is dead. Host token only.
+  rpc Admit(DecideRequest) returns (Ack);
+  rpc Deny(DecideRequest) returns (Ack);
+
+  // RoomCredentials gives an ADMITTED peer TURN credentials that expire with the
+  // room, charged to the host's subject.
+  rpc RoomCredentials(RoomRef) returns (IceServers);
+
+  // CloseRoom ends the room (host token only).
+  rpc CloseRoom(RoomRef) returns (Ack);
+
+  // Room is the room's one bidirectional stream. Metadata: authorization (the
+  // peer token) and x-turn-room (the room ID). The server sends every event for
+  // the peer, system events included; the peer sends messages, routed host to
+  // guest and guest to host (never guest to guest). A pending guest may not send.
+  // Ending the stream (either side cancelling or half-closing) means leaving:
+  // a guest leaves, the host's leaving closes the room.
+  rpc Room(stream Envelope) returns (stream Envelope);
+}
+
+message CredentialsRequest {}
+
+message CreateRoomRequest {}
+
+message CreateRoomResponse {
+  string room = 1; // 128 random bits, 32 hex characters
+  string peer = 2; // "host"
+  string token = 3;
+  int64 expires = 4; // Unix seconds
+}
+
+message JoinRoomRequest {
+  string room = 1;
+  string name = 2; // display name: at most 64 characters, no control characters
+}
+
+message JoinRoomResponse {
+  string room = 1;
+  string peer = 2;
+  string host = 3; // the host's peer ID
+  string token = 4;
+  int64 expires = 5;
+  bool pending = 6; // always true: wait for sys.admitted
+}
+
+message DecideRequest {
+  string room = 1;
+  string peer = 2;
+}
+
+message RoomRef {
+  string room = 1;
+}
+
+message Ack {}
+
+// IceServers is shaped like an RTCConfiguration's iceServers list.
+message IceServers {
+  repeated IceServer ice_servers = 1;
+  int32 ttl = 2; // seconds
+}
+
+message IceServer {
+  repeated string urls = 1;
+  string username = 2;
+  string credential = 3;
+}
+
+// Envelope is a message or an event. Kinds starting "sys." are the server's:
+//
+//	sys.knock    to the host: from is a waiting guest, body its display name
+//	sys.join     to the host: from is a guest that was admitted
+//	sys.leave    to the host: from is a guest that left (body "expired" if its wait ran out)
+//	sys.admitted to a guest: the host let it in
+//	sys.denied   to a guest: refused, removed, or its wait expired; the token is dead
+//	sys.closed   to everyone: the room is over (the stream then ends)
+//	sys.error    to the sender of a message the OTHER peer could not take (gone,
+//	             queue full): body "<Code>: <reason>" with the gRPC code's name,
+//	             e.g. "NotFound: no such peer"; the stream stays open
+//
+// A message that breaks the protocol (body over the limit, a "from" that is not
+// the sender, a bad kind, a pending sender, guest to guest) instead ENDS the
+// sender's stream with a status: RESOURCE_EXHAUSTED, PERMISSION_DENIED,
+// INVALID_ARGUMENT. Ending a stream is leaving, so for a guest that kills its
+// token and for the host it closes the room.
+message Envelope {
+  uint64 seq = 1; // set by the server on events
+  string from = 2; // must be the sender's own peer ID on messages
+  string to = 3;
+  string kind = 4; // [a-z0-9._-], at most 32 characters, never "sys."
+  bytes body = 5;
+}

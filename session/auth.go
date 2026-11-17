@@ -43,6 +43,13 @@ func (a *Auth) Subject(r *http.Request) (string, error) {
 	if !ok {
 		return "", ErrUnauthorized
 	}
+	return a.Authenticate(r.Context(), tok)
+}
+
+// Authenticate returns the opaque subject of a token: a turnd session token or
+// an issuer access token. It is what a gRPC service calls with the token of
+// its "authorization: Bearer" metadata.
+func (a *Auth) Authenticate(ctx context.Context, tok string) (string, error) {
 	now := time.Now
 	if a.Now != nil {
 		now = a.Now
@@ -58,7 +65,7 @@ func (a *Auth) Subject(r *http.Request) (string, error) {
 	if a.AccessTokens == nil {
 		return "", ErrUnauthorized
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	t, err := a.AccessTokens.Verify(ctx, tok)
 	if err != nil {
