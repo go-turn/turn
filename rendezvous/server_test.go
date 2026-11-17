@@ -1,47 +1,51 @@
 package rendezvous
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
-	"net/http/httptest"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-turn/turn/creds"
+	turnv1 "github.com/go-turn/turn/proto/turn/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 var base = time.Unix(1_800_000_000, 0)
 
 type fix struct {
-	t    *testing.T
-	s    *Server
-	ts   *httptest.Server
-	ring *creds.Keyring
-	off  atomic.Int64 // seconds the clock has advanced
+	t     *testing.T
+	s     *Server
+	c     turnv1.TurndClient
+	ring  *creds.Keyring
+	off   atomic.Int64 // seconds the clock has advanced
+	hosts map[string]string
 }
 
 func (f *fix) now() time.Time { return base.Add(time.Duration(f.off.Load()) * time.Second) }
 
 func newFix(t *testing.T, mod func(*Config)) *fix {
 	t.Helper()
-	f := &fix{t: t}
+	f := &fix{t: t, hosts: map[string]string{}}
 	f.ring, _ = creds.NewKeyring([]byte("0123456789abcdef0123"))
 	cfg := Config{
-		Auth: func(r *http.Request) (string, error) {
-			if tok := bearerToken(r); strings.HasPrefix(tok, "user:") {
-				return tok[5:], nil
+		Auth: func(_ context.Context, tok string) (string, error) {
+			if s, ok := strings.CutPrefix(tok, "user:"); ok && s != "" {
+				return s, nil
 			}
 			return "", errors.New("no")
 		},
 		Keyring: f.ring, STUN: []string{"stun:t.example:3478"}, TURN: []string{"turn:t.example:3478?transport=udp"},
-		Origins: []string{"https://go-tex.github.io"}, Now: f.now,
+		Now: f.now,
 	}
 	if mod != nil {
 		mod(&cfg)
@@ -50,107 +54,149 @@ func newFix(t *testing.T, mod func(*Config)) *fix {
 	if f.s, err = New(cfg); err != nil {
 		t.Fatal(err)
 	}
-	f.ts = httptest.NewServer(f.s.Handler())
-	t.Cleanup(f.ts.Close)
+	gs := grpc.NewServer(grpc.MaxRecvMsgSize(f.s.MaxRecvMsgSize()))
+	f.s.Register(gs)
+	lis := bufconn.Listen(1 << 20)
+	go func() { _ = gs.Serve(lis) }()
+	cc, err := grpc.NewClient("passthrough:///bufnet", grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cc.Close(); gs.Stop() })
+	f.c = turnv1.NewTurndClient(cc)
 	return f
 }
 
-func (f *fix) req(method, path, token string, body any, hdr ...string) (*http.Response, []byte) {
-	f.t.Helper()
-	var rd io.Reader
-	switch b := body.(type) {
-	case nil:
-	case string:
-		rd = strings.NewReader(b)
-	default:
-		j, _ := json.Marshal(b)
-		rd = bytes.NewReader(j)
-	}
-	r, _ := http.NewRequest(method, f.ts.URL+path, rd)
+func tctx(t *testing.T, token string, kv ...string) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	md := metadata.MD{}
 	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
+		md.Set("authorization", "Bearer "+token)
 	}
-	for i := 0; i+1 < len(hdr); i += 2 {
-		r.Header.Set(hdr[i], hdr[i+1])
+	for i := 0; i+1 < len(kv); i += 2 {
+		md.Set(kv[i], kv[i+1])
 	}
-	resp, err := http.DefaultClient.Do(r)
+	return metadata.NewOutgoingContext(ctx, md)
+}
+
+func code(err error) codes.Code { return status.Code(err) }
+
+func (f *fix) create(user string) *turnv1.CreateRoomResponse {
+	f.t.Helper()
+	r, err := f.c.CreateRoom(tctx(f.t, "user:"+user), &turnv1.CreateRoomRequest{})
 	if err != nil {
-		f.t.Fatal(err)
+		f.t.Fatalf("create: %v", err)
 	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	return resp, b
+	f.hosts[r.Room] = r.Token
+	return r
 }
 
-func (f *fix) create(user string) CreateResponse {
+// knock joins as a pending guest.
+func (f *fix) knock(room, name string) *turnv1.JoinRoomResponse {
 	f.t.Helper()
-	resp, b := f.req("POST", "/rooms", "user:"+user, nil)
-	if resp.StatusCode != 201 {
-		f.t.Fatalf("create: %d %s", resp.StatusCode, b)
+	j, err := f.c.JoinRoom(tctx(f.t, ""), &turnv1.JoinRoomRequest{Room: room, Name: name})
+	if err != nil {
+		f.t.Fatalf("join: %v", err)
 	}
-	var c CreateResponse
-	_ = json.Unmarshal(b, &c)
-	return c
-}
-
-func (f *fix) join(room string) JoinResponse {
-	f.t.Helper()
-	resp, b := f.req("POST", "/rooms/"+room+"/join", "", nil)
-	if resp.StatusCode != 201 {
-		f.t.Fatalf("join: %d %s", resp.StatusCode, b)
+	if !j.Pending {
+		f.t.Fatal("a new guest is not pending")
 	}
-	var j JoinResponse
-	_ = json.Unmarshal(b, &j)
 	return j
 }
 
-func (f *fix) send(room, token string, m MessageRequest) int {
+// join knocks and has the host admit the guest.
+func (f *fix) join(room string) *turnv1.JoinRoomResponse {
 	f.t.Helper()
-	resp, _ := f.req("POST", "/rooms/"+room+"/messages", token, m)
-	return resp.StatusCode
+	j := f.knock(room, "")
+	if err := f.decide("admit", room, j.Peer); err != nil {
+		f.t.Fatalf("admit: %v", err)
+	}
+	return j
 }
 
-// stream opens the SSE stream and returns a channel of events ("closed" is Kind "closed").
-func (f *fix) stream(room, token string) (<-chan Event, *http.Response) {
+func (f *fix) decide(verb, room, peer string) error {
+	return f.decideAs(verb, room, f.hosts[room], peer)
+}
+
+func (f *fix) decideAs(verb, room, token, peer string) error {
 	f.t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	req := &turnv1.DecideRequest{Room: room, Peer: peer}
+	var err error
+	if verb == "admit" {
+		_, err = f.c.Admit(tctx(f.t, token), req)
+	} else {
+		_, err = f.c.Deny(tctx(f.t, token), req)
+	}
+	return err
+}
+
+// ps is an open Room stream.
+type ps struct {
+	st  grpc.BidiStreamingClient[turnv1.Envelope, turnv1.Envelope]
+	ev  chan *turnv1.Envelope
+	end chan error // the stream's final error (nil for a clean end)
+}
+
+// open opens the Room stream. A refused open shows up as the first Recv error.
+func (f *fix) open(room, token string) *ps {
+	f.t.Helper()
+	ctx, cancel := context.WithCancel(tctx(f.t, token, RoomMetadata, room))
 	f.t.Cleanup(cancel)
-	r, _ := http.NewRequestWithContext(ctx, "GET", f.ts.URL+"/rooms/"+room+"/events", nil)
-	r.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(r)
+	st, err := f.c.Room(ctx)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	ch := make(chan Event, 256)
-	if resp.StatusCode != 200 {
-		close(ch)
-		return ch, resp
-	}
+	p := &ps{st: st, ev: make(chan *turnv1.Envelope, 256), end: make(chan error, 1)}
 	go func() {
-		defer close(ch)
-		sc := bufio.NewScanner(resp.Body)
-		ev := ""
-		for sc.Scan() {
-			switch l := sc.Text(); {
-			case strings.HasPrefix(l, "event: "):
-				ev = l[7:]
-			case strings.HasPrefix(l, "data: "):
-				var e Event
-				_ = json.Unmarshal([]byte(l[6:]), &e)
-				if ev == "closed" {
-					e.Kind = "closed"
+		for {
+			e, err := st.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = nil
 				}
-				ch <- e
+				close(p.ev)
+				p.end <- err
+				return
 			}
+			p.ev <- e
 		}
 	}()
-	return ch, resp
+	// A client stream is lazy: wait until the server's handler has registered it
+	// (or the stream has already ended), so that what the test does next cannot
+	// overtake the open.
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && len(p.end) == 0; time.Sleep(time.Millisecond) {
+		if f.streaming(room, token) {
+			break
+		}
+	}
+	return p
 }
 
-func next(t *testing.T, ch <-chan Event) Event {
+func (f *fix) streaming(room, token string) bool {
+	f.s.mu.Lock()
+	defer f.s.mu.Unlock()
+	rm := f.s.rooms[room]
+	if rm == nil {
+		return false
+	}
+	for _, p := range rm.peers {
+		if p.token == token && p.streaming {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *ps) send(from, to, kind string, body []byte) {
+	_ = p.st.Send(&turnv1.Envelope{From: from, To: to, Kind: kind, Body: body})
+}
+
+func (p *ps) next(t *testing.T) *turnv1.Envelope {
 	t.Helper()
 	select {
-	case e, ok := <-ch:
+	case e, ok := <-p.ev:
 		if !ok {
 			t.Fatal("stream ended")
 		}
@@ -158,14 +204,38 @@ func next(t *testing.T, ch <-chan Event) Event {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no event")
 	}
-	return Event{}
+	return nil
+}
+
+func (p *ps) nothing(t *testing.T) {
+	t.Helper()
+	select {
+	case e, ok := <-p.ev:
+		if ok {
+			t.Fatalf("unexpected event %v", e)
+		}
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// ended waits for the stream to end and returns its status code.
+func (p *ps) ended(t *testing.T) codes.Code {
+	t.Helper()
+	select {
+	case err := <-p.end:
+		return code(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream did not end")
+	}
+	return codes.Unknown
 }
 
 func TestCreateNeedsSession(t *testing.T) {
 	f := newFix(t, nil)
 	for _, tok := range []string{"", "garbage", "user:"} {
-		if resp, _ := f.req("POST", "/rooms", tok, nil); resp.StatusCode != 401 {
-			t.Errorf("token %q: %d", tok, resp.StatusCode)
+		_, err := f.c.CreateRoom(tctx(t, tok), &turnv1.CreateRoomRequest{})
+		if code(err) != codes.Unauthenticated {
+			t.Errorf("token %q: %v", tok, err)
 		}
 	}
 	c := f.create("alice")
@@ -175,137 +245,186 @@ func TestCreateNeedsSession(t *testing.T) {
 	if d := f.create("alice"); d.Room == c.Room || d.Token == c.Token {
 		t.Fatal("two rooms alike")
 	}
-	if resp, _ := f.req("POST", "/credentials", "", nil); resp.StatusCode != 401 {
-		t.Errorf("credentials without session: %d", resp.StatusCode)
+	if _, err := f.c.Credentials(tctx(t, ""), &turnv1.CredentialsRequest{}); code(err) != codes.Unauthenticated {
+		t.Errorf("credentials without session: %v", err)
+	}
+	// two authorization headers are refused, not merged
+	two := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", "Bearer user:a", "authorization", "Bearer user:b"))
+	if _, err := f.c.CreateRoom(two, &turnv1.CreateRoomRequest{}); code(err) != codes.Unauthenticated {
+		t.Errorf("two authorization values: %v", err)
 	}
 }
 
 func TestRoutingAndEvents(t *testing.T) {
 	f := newFix(t, nil)
 	c := f.create("alice")
-	hostEv, _ := f.stream(c.Room, c.Token)
+	host := f.open(c.Room, c.Token)
 	g1, g2 := f.join(c.Room), f.join(c.Room)
 	if g1.Peer == g2.Peer || g1.Token == g2.Token || g1.Host != "host" {
 		t.Fatalf("%+v %+v", g1, g2)
 	}
-	if e := next(t, hostEv); e.Kind != "sys.join" || e.From != g1.Peer {
-		t.Fatalf("%+v", e)
-	}
-	if e := next(t, hostEv); e.Kind != "sys.join" || e.From != g2.Peer {
-		t.Fatalf("%+v", e)
-	}
-	g1Ev, _ := f.stream(c.Room, g1.Token)
-	g2Ev, _ := f.stream(c.Room, g2.Token)
-	// guest to host
-	if st := f.send(c.Room, g1.Token, MessageRequest{From: g1.Peer, To: "host", Kind: "answer", Body: "sdp-1"}); st != 204 {
-		t.Fatalf("guest->host %d", st)
-	}
-	if e := next(t, hostEv); e.Kind != "answer" || e.Body != "sdp-1" || e.From != g1.Peer || e.To != "host" {
-		t.Fatalf("%+v", e)
-	}
-	// host to one guest only
-	if st := f.send(c.Room, c.Token, MessageRequest{From: "host", To: g2.Peer, Kind: "offer", Body: "sdp-2"}); st != 204 {
-		t.Fatalf("host->guest %d", st)
-	}
-	if e := next(t, g2Ev); e.Kind != "offer" || e.Body != "sdp-2" {
-		t.Fatalf("%+v", e)
-	}
-	select {
-	case e := <-g1Ev:
-		t.Fatalf("guest 1 got guest 2's message: %+v", e)
-	case <-time.After(100 * time.Millisecond):
-	}
-	// refusals
-	for name, tc := range map[string]struct {
-		tok string
-		m   MessageRequest
-		st  int
-	}{
-		"spoofed from":               {g1.Token, MessageRequest{From: "host", To: "host", Kind: "x"}, 403},
-		"guest to guest":             {g1.Token, MessageRequest{From: g1.Peer, To: g2.Peer, Kind: "x"}, 403},
-		"to nobody":                  {c.Token, MessageRequest{From: "host", To: "g99", Kind: "x"}, 404},
-		"to self":                    {c.Token, MessageRequest{From: "host", To: "host", Kind: "x"}, 404},
-		"system kind":                {g1.Token, MessageRequest{From: g1.Peer, To: "host", Kind: "sys.join"}, 400},
-		"empty kind":                 {g1.Token, MessageRequest{From: g1.Peer, To: "host", Kind: ""}, 400},
-		"upper kind":                 {g1.Token, MessageRequest{From: g1.Peer, To: "host", Kind: "Offer"}, 400},
-		"no token":                   {"", MessageRequest{From: g1.Peer, To: "host", Kind: "x"}, 401},
-		"another token":              {"user:alice", MessageRequest{From: "host", To: g1.Peer, Kind: "x"}, 401},
-		"guest 1's token as guest 2": {g1.Token, MessageRequest{From: g2.Peer, To: "host", Kind: "x"}, 403},
-	} {
-		if st := f.send(c.Room, tc.tok, tc.m); st != tc.st {
-			t.Errorf("%s: %d, want %d", name, st, tc.st)
+	for _, g := range []*turnv1.JoinRoomResponse{g1, g2} {
+		for _, kind := range []string{"sys.knock", "sys.join"} {
+			if e := host.next(t); e.Kind != kind || e.From != g.Peer {
+				t.Fatalf("%v, want %s from %s", e, kind, g.Peer)
+			}
 		}
 	}
-	// the room ID alone is a capability to JOIN, not to read or write.
-	if resp, _ := f.req("GET", "/rooms/"+c.Room+"/events", "", nil); resp.StatusCode != 401 {
-		t.Errorf("events without token: %d", resp.StatusCode)
+	s1, s2 := f.open(c.Room, g1.Token), f.open(c.Room, g2.Token)
+	if e := s1.next(t); e.Kind != "sys.admitted" {
+		t.Fatalf("%v", e)
 	}
-	if resp, _ := f.req("GET", "/rooms/"+strings.Repeat("0", 32)+"/events", c.Token, nil); resp.StatusCode != 404 {
-		t.Errorf("unknown room: %d", resp.StatusCode)
+	s2.next(t)
+	s1.send(g1.Peer, "host", "answer", []byte("sdp-1"))
+	if e := host.next(t); e.Kind != "answer" || string(e.Body) != "sdp-1" || e.From != g1.Peer || e.To != "host" || e.Seq == 0 {
+		t.Fatalf("%v", e)
 	}
-	if resp, _ := f.req("GET", "/rooms/zz/events", c.Token, nil); resp.StatusCode != 404 {
-		t.Errorf("malformed room id: %d", resp.StatusCode)
+	host.send("host", g2.Peer, "offer", []byte("sdp-2"))
+	if e := s2.next(t); e.Kind != "offer" || string(e.Body) != "sdp-2" || e.From != "host" {
+		t.Fatalf("%v", e)
 	}
-	if resp, _ := f.req("POST", "/rooms/"+c.Room+"/messages", c.Token, `{"from":"host","to":"`+g1.Peer+`","kind":"x","extra":1}`); resp.StatusCode != 400 {
-		t.Errorf("unknown field: %d", resp.StatusCode)
+	s1.nothing(t) // guest 1 never sees guest 2's message
+
+	// the other peer's state is not the sender's fault: sys.error, stream stays open
+	host.send("host", "g99", "x", nil)
+	if e := host.next(t); e.Kind != "sys.error" || !strings.HasPrefix(string(e.Body), "NotFound: ") {
+		t.Fatalf("%v", e)
 	}
-	if st := f.send(c.Room, c.Token, MessageRequest{From: "host", To: g1.Peer, Kind: "offer", Body: "ok"}); st != 204 {
-		t.Errorf("control: %d", st)
+	host.send("host", "host", "x", nil)
+	if e := host.next(t); e.Kind != "sys.error" {
+		t.Fatalf("to self: %v", e)
+	}
+	host.send("host", g1.Peer, "offer", []byte("still open"))
+	if e := s1.next(t); string(e.Body) != "still open" {
+		t.Fatalf("%v", e)
+	}
+}
+
+// Each protocol violation ends the sender's stream with its status. A fresh
+// guest is used for each, since a violation is a departure.
+func TestProtocolViolationsEndTheStream(t *testing.T) {
+	f := newFix(t, nil)
+	c := f.create("alice")
+	for name, tc := range []struct {
+		name         string
+		from, to, kd string
+		want         codes.Code
+	}{
+		{"spoofed from", "host", "host", "x", codes.PermissionDenied},
+		{"guest to guest", "SELF", "g1", "x", codes.PermissionDenied},
+		{"system kind", "SELF", "host", "sys.join", codes.InvalidArgument},
+		{"empty kind", "SELF", "host", "", codes.InvalidArgument},
+		{"upper-case kind", "SELF", "host", "Offer", codes.InvalidArgument},
+		{"long kind", "SELF", "host", strings.Repeat("a", 33), codes.InvalidArgument},
+	} {
+		_ = name
+		g := f.join(c.Room)
+		s := f.open(c.Room, g.Token)
+		s.next(t) // sys.admitted
+		from := tc.from
+		if from == "SELF" {
+			from = g.Peer
+		}
+		s.send(from, tc.to, tc.kd, nil)
+		if got := s.ended(t); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+		// the violation was a departure: the token is dead
+		if _, err := f.c.RoomCredentials(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room}); code(err) != codes.Unauthenticated {
+			t.Errorf("%s: the token of a guest that broke the protocol still works: %v", tc.name, err)
+		}
+	}
+}
+
+func TestStreamAuth(t *testing.T) {
+	f := newFix(t, nil)
+	c := f.create("alice")
+	g := f.join(c.Room)
+	for name, tc := range map[string]struct {
+		room, token string
+		want        codes.Code
+	}{
+		"no token":      {c.Room, "", codes.Unauthenticated},
+		"session token": {c.Room, "user:alice", codes.Unauthenticated},
+		"wrong room":    {strings.Repeat("0", 32), c.Token, codes.NotFound},
+		"malformed":     {"zz", c.Token, codes.NotFound},
+		"no room":       {"", c.Token, codes.NotFound},
+	} {
+		if got := f.open(tc.room, tc.token).ended(t); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+	}
+	// control: the right pair opens
+	f.open(c.Room, g.Token).next(t)
+	// a guest's token with another room's ID
+	other := f.create("bob")
+	if got := f.open(other.Room, g.Token).ended(t); got != codes.Unauthenticated {
+		t.Errorf("token of one room on another: %v", got)
 	}
 }
 
 func TestSecondStreamRefused(t *testing.T) {
 	f := newFix(t, nil)
 	c := f.create("alice")
-	ev, _ := f.stream(c.Room, c.Token)
+	host := f.open(c.Room, c.Token)
 	f.join(c.Room)
-	next(t, ev)
-	if _, resp := f.stream(c.Room, c.Token); resp.StatusCode != 409 {
-		t.Fatalf("second stream: %d", resp.StatusCode)
+	host.next(t)
+	if got := f.open(c.Room, c.Token).ended(t); got != codes.AlreadyExists {
+		t.Fatalf("second stream: %v", got)
 	}
 }
 
 func TestBoundMessageSize(t *testing.T) {
 	f := newFix(t, func(c *Config) { c.Limits.MaxMessageBytes = 100 })
 	c := f.create("alice")
+	host := f.open(c.Room, c.Token)
 	g := f.join(c.Room)
-	ok := MessageRequest{From: g.Peer, To: "host", Kind: "answer", Body: strings.Repeat("a", 100)}
-	if st := f.send(c.Room, g.Token, ok); st != 204 {
-		t.Fatalf("at the bound: %d", st)
+	s := f.open(c.Room, g.Token)
+	s.next(t)
+	host.next(t)
+	host.next(t)
+	s.send(g.Peer, "host", "answer", []byte(strings.Repeat("a", 100)))
+	if e := host.next(t); len(e.Body) != 100 {
+		t.Fatalf("at the bound: %d bytes", len(e.Body))
 	}
-	ok.Body += "a"
-	if st := f.send(c.Room, g.Token, ok); st != 413 {
-		t.Fatalf("one over: %d", st)
+	s.send(g.Peer, "host", "answer", []byte(strings.Repeat("a", 101)))
+	if got := s.ended(t); got != codes.ResourceExhausted {
+		t.Fatalf("one over: %v", got)
 	}
-	// far over: refused by the reader, not buffered
-	big := MessageRequest{From: g.Peer, To: "host", Kind: "answer", Body: strings.Repeat("a", 1<<20)}
-	if st := f.send(c.Room, g.Token, big); st != 413 {
-		t.Fatalf("1 MiB: %d", st)
+	// far over: refused by gRPC's own receive bound, before the service sees it
+	g2 := f.join(c.Room)
+	s2 := f.open(c.Room, g2.Token)
+	s2.next(t)
+	s2.send(g2.Peer, "host", "answer", []byte(strings.Repeat("a", 1<<20)))
+	if got := s2.ended(t); got != codes.ResourceExhausted {
+		t.Fatalf("1 MiB: %v", got)
 	}
 }
 
 func TestBoundQueue(t *testing.T) {
-	f := newFix(t, func(c *Config) { c.Limits.MaxQueue = 3 })
+	f := newFix(t, func(c *Config) { c.Limits.MaxQueue = 4 })
 	c := f.create("alice")
-	g := f.join(c.Room) // the host's queue already holds sys.join: 1 of 3
-	m := MessageRequest{From: g.Peer, To: "host", Kind: "ice"}
-	for i := 0; i < 2; i++ {
-		if st := f.send(c.Room, g.Token, m); st != 204 {
-			t.Fatalf("message %d: %d", i, st)
+	g := f.join(c.Room) // the host's queue already holds sys.knock and sys.join: 2 of 4
+	s := f.open(c.Room, g.Token)
+	s.next(t)
+	for range 4 { // two fit, two are refused
+		s.send(g.Peer, "host", "ice", nil)
+	}
+	for range 2 {
+		if e := s.next(t); e.Kind != "sys.error" || !strings.HasPrefix(string(e.Body), "ResourceExhausted: ") {
+			t.Fatalf("%v", e)
 		}
 	}
-	// 1 sys.join + 2 messages = 3: full.
-	if st := f.send(c.Room, g.Token, m); st != 429 {
-		t.Fatalf("over the queue bound: %d", st)
-	}
+	s.nothing(t)
 	// draining makes room again (control)
-	ev, _ := f.stream(c.Room, c.Token)
-	for i := 0; i < 3; i++ {
-		next(t, ev)
+	host := f.open(c.Room, c.Token)
+	for range 4 {
+		host.next(t)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if st := f.send(c.Room, g.Token, m); st != 204 {
-		t.Fatalf("after drain: %d", st)
+	host.nothing(t)
+	s.send(g.Peer, "host", "ice", nil)
+	if e := host.next(t); e.Kind != "ice" {
+		t.Fatalf("after drain: %v", e)
 	}
 }
 
@@ -314,11 +433,15 @@ func TestBoundGuests(t *testing.T) {
 	c := f.create("alice")
 	f.join(c.Room)
 	f.join(c.Room)
-	if resp, _ := f.req("POST", "/rooms/"+c.Room+"/join", "", nil); resp.StatusCode != 429 {
-		t.Fatalf("third guest: %d", resp.StatusCode)
+	third := f.knock(c.Room, "") // knocking is allowed; being admitted is what the cap counts
+	if err := f.decide("admit", c.Room, third.Peer); code(err) != codes.ResourceExhausted {
+		t.Fatalf("third admitted guest: %v", err)
 	}
-	if resp, _ := f.req("POST", "/rooms/"+strings.Repeat("a", 32)+"/join", "", nil); resp.StatusCode != 404 {
-		t.Fatalf("unknown room: %d", resp.StatusCode)
+	if err := f.decide("deny", c.Room, third.Peer); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if _, err := f.c.JoinRoom(tctx(t, ""), &turnv1.JoinRoomRequest{Room: strings.Repeat("a", 32)}); code(err) != codes.NotFound {
+		t.Fatalf("unknown room: %v", err)
 	}
 }
 
@@ -326,19 +449,19 @@ func TestBoundRoomsPerSubjectAndGlobal(t *testing.T) {
 	f := newFix(t, func(c *Config) { c.Limits.MaxRoomsPerSubject = 2; c.Limits.MaxRooms = 3 })
 	f.create("alice")
 	r2 := f.create("alice")
-	if resp, _ := f.req("POST", "/rooms", "user:alice", nil); resp.StatusCode != 429 {
-		t.Fatalf("third room of one subject: %d", resp.StatusCode)
+	if _, err := f.c.CreateRoom(tctx(t, "user:alice"), &turnv1.CreateRoomRequest{}); code(err) != codes.ResourceExhausted {
+		t.Fatalf("third room of one subject: %v", err)
 	}
 	f.create("bob") // another subject is not charged to alice
-	if resp, _ := f.req("POST", "/rooms", "user:carol", nil); resp.StatusCode != 503 {
-		t.Fatalf("global cap: %d", resp.StatusCode)
+	if _, err := f.c.CreateRoom(tctx(t, "user:carol"), &turnv1.CreateRoomRequest{}); code(err) != codes.Unavailable {
+		t.Fatalf("global cap: %v", err)
 	}
 	// closing a room frees its slot
-	if resp, _ := f.req("DELETE", "/rooms/"+r2.Room, r2.Token, nil); resp.StatusCode != 204 {
-		t.Fatalf("delete: %d", resp.StatusCode)
+	if _, err := f.c.CloseRoom(tctx(t, r2.Token), &turnv1.RoomRef{Room: r2.Room}); err != nil {
+		t.Fatalf("close: %v", err)
 	}
-	if resp, _ := f.req("POST", "/rooms", "user:alice", nil); resp.StatusCode != 201 {
-		t.Fatalf("after delete: %d", resp.StatusCode)
+	if _, err := f.c.CreateRoom(tctx(t, "user:alice"), &turnv1.CreateRoomRequest{}); err != nil {
+		t.Fatalf("after close: %v", err)
 	}
 }
 
@@ -346,21 +469,25 @@ func TestRoomTTL(t *testing.T) {
 	f := newFix(t, func(c *Config) { c.Limits.RoomTTL = 10 * time.Minute })
 	c := f.create("alice")
 	g := f.join(c.Room)
-	ev, _ := f.stream(c.Room, g.Token)
+	s := f.open(c.Room, g.Token)
+	s.next(t)
 	f.off.Store(599)
-	if st := f.send(c.Room, g.Token, MessageRequest{From: g.Peer, To: "host", Kind: "x"}); st != 204 {
-		t.Fatalf("just before: %d", st)
+	if _, err := f.c.RoomCredentials(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room}); err != nil {
+		t.Fatalf("just before: %v", err)
 	}
 	f.off.Store(600)
 	f.s.Sweep()
-	if e := next(t, ev); e.Kind != "closed" {
-		t.Fatalf("%+v", e)
+	if e := s.next(t); e.Kind != "sys.closed" {
+		t.Fatalf("%v", e)
 	}
-	if resp, _ := f.req("POST", "/rooms/"+c.Room+"/join", "", nil); resp.StatusCode != 404 {
-		t.Fatalf("join after TTL: %d", resp.StatusCode)
+	if got := s.ended(t); got != codes.OK {
+		t.Fatalf("the stream ends cleanly after sys.closed: %v", got)
 	}
-	if st := f.send(c.Room, g.Token, MessageRequest{From: g.Peer, To: "host", Kind: "x"}); st != 404 {
-		t.Fatalf("send after TTL: %d", st)
+	if _, err := f.c.JoinRoom(tctx(t, ""), &turnv1.JoinRoomRequest{Room: c.Room}); code(err) != codes.NotFound {
+		t.Fatalf("join after TTL: %v", err)
+	}
+	if _, err := f.c.RoomCredentials(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room}); code(err) != codes.NotFound {
+		t.Fatalf("credentials after TTL: %v", err)
 	}
 	if f.s.Rooms() != 0 {
 		t.Fatalf("rooms %d", f.s.Rooms())
@@ -370,8 +497,8 @@ func TestRoomTTL(t *testing.T) {
 func TestLazyExpiryFreesQuota(t *testing.T) {
 	f := newFix(t, func(c *Config) { c.Limits.RoomTTL = time.Minute; c.Limits.MaxRoomsPerSubject = 1 })
 	f.create("alice")
-	if resp, _ := f.req("POST", "/rooms", "user:alice", nil); resp.StatusCode != 429 {
-		t.Fatalf("%d", resp.StatusCode)
+	if _, err := f.c.CreateRoom(tctx(t, "user:alice"), &turnv1.CreateRoomRequest{}); code(err) != codes.ResourceExhausted {
+		t.Fatalf("%v", err)
 	}
 	f.off.Store(61)
 	f.create("alice")
@@ -379,27 +506,25 @@ func TestLazyExpiryFreesQuota(t *testing.T) {
 
 func TestCredentials(t *testing.T) {
 	f := newFix(t, func(c *Config) { c.Limits.MaxCredsPerRoom = 2; c.Limits.RoomTTL = 30 * time.Minute })
-	// host credentials
-	resp, b := f.req("POST", "/credentials", "user:alice", nil)
-	var r creds.Response
-	if resp.StatusCode != 200 || json.Unmarshal(b, &r) != nil || r.TTL != 3600 || len(r.ICEServers) != 2 {
-		t.Fatalf("%d %s", resp.StatusCode, b)
+	r, err := f.c.Credentials(tctx(t, "user:alice"), &turnv1.CredentialsRequest{})
+	if err != nil || r.Ttl != 3600 || len(r.IceServers) != 2 {
+		t.Fatalf("%v %v", r, err)
 	}
-	turn := r.ICEServers[1]
+	turn := r.IceServers[1]
 	if pw, ok := f.ring.Verify(turn.Username, f.now()); !ok || pw != turn.Credential {
-		t.Fatalf("host creds do not verify: %+v", turn)
+		t.Fatalf("host creds do not verify: %v", turn)
 	}
 	// guest credentials: charged to the host's subject, expiring with the room
 	c := f.create("alice")
 	g := f.join(c.Room)
-	resp, b = f.req("POST", "/rooms/"+c.Room+"/credentials", g.Token, nil)
-	if resp.StatusCode != 200 || json.Unmarshal(b, &r) != nil {
-		t.Fatalf("%d %s", resp.StatusCode, b)
+	r, err = f.c.RoomCredentials(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if r.TTL != 1800 {
-		t.Fatalf("guest ttl %d, want the room's remaining 1800", r.TTL)
+	if r.Ttl != 1800 {
+		t.Fatalf("guest ttl %d, want the room's remaining 1800", r.Ttl)
 	}
-	turn = r.ICEServers[1]
+	turn = r.IceServers[1]
 	exp, subj, _ := creds.Parse(turn.Username)
 	if exp.Unix() != c.Expires || !strings.HasSuffix(subj, ".alice") {
 		t.Fatalf("username %q (room expires %d)", turn.Username, c.Expires)
@@ -410,73 +535,67 @@ func TestCredentials(t *testing.T) {
 	if _, ok := f.ring.Verify(turn.Username, f.now().Add(31*time.Minute)); ok {
 		t.Fatal("guest creds outlive the room")
 	}
-	// later in the room's life the TTL shrinks
 	f.off.Store(600)
-	_, b = f.req("POST", "/rooms/"+c.Room+"/credentials", c.Token, nil)
-	_ = json.Unmarshal(b, &r)
-	if r.TTL != 1200 {
-		t.Fatalf("ttl %d", r.TTL)
+	r, _ = f.c.RoomCredentials(tctx(t, c.Token), &turnv1.RoomRef{Room: c.Room})
+	if r.Ttl != 1200 {
+		t.Fatalf("ttl %d", r.Ttl)
 	}
-	// cap and auth
-	if resp, _ := f.req("POST", "/rooms/"+c.Room+"/credentials", g.Token, nil); resp.StatusCode != 429 {
-		t.Fatalf("over the per-room cap: %d", resp.StatusCode)
+	if _, err := f.c.RoomCredentials(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room}); code(err) != codes.ResourceExhausted {
+		t.Fatalf("over the per-room cap: %v", err)
 	}
-	if resp, _ := f.req("POST", "/rooms/"+c.Room+"/credentials", "", nil); resp.StatusCode != 401 {
-		t.Fatalf("no token: %d", resp.StatusCode)
+	if _, err := f.c.RoomCredentials(tctx(t, ""), &turnv1.RoomRef{Room: c.Room}); code(err) != codes.Unauthenticated {
+		t.Fatalf("no token: %v", err)
 	}
 }
 
-func TestCORS(t *testing.T) {
-	f := newFix(t, nil)
-	resp, _ := f.req("POST", "/rooms", "user:a", nil, "Origin", "https://go-tex.github.io")
-	if resp.StatusCode != 201 || resp.Header.Get("Access-Control-Allow-Origin") != "https://go-tex.github.io" {
-		t.Fatalf("%d %v", resp.StatusCode, resp.Header)
-	}
-	if resp.Header.Get("Vary") != "Origin" {
-		t.Errorf("Vary %q", resp.Header.Get("Vary"))
-	}
-	pre, _ := f.req("OPTIONS", "/rooms", "", nil, "Origin", "https://go-tex.github.io", "Access-Control-Request-Method", "POST")
-	if pre.StatusCode != 204 || !strings.Contains(pre.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
-		t.Fatalf("preflight %d %v", pre.StatusCode, pre.Header)
-	}
-	for _, o := range []string{"https://evil.example", "https://go-tex.github.io.evil.example", "https://GO-TEX.github.io", "null", "*", "http://go-tex.github.io"} {
-		resp, _ := f.req("POST", "/rooms", "user:a", nil, "Origin", o)
-		if resp.StatusCode != 403 || resp.Header.Get("Access-Control-Allow-Origin") != "" {
-			t.Errorf("origin %q: %d %q", o, resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
-		}
-		pre, _ := f.req("OPTIONS", "/rooms", "", nil, "Origin", o, "Access-Control-Request-Method", "POST")
-		if pre.StatusCode != 403 || pre.Header.Get("Access-Control-Allow-Origin") != "" {
-			t.Errorf("preflight origin %q: %d", o, pre.StatusCode)
-		}
-	}
-	if _, err := New(Config{Auth: func(*http.Request) (string, error) { return "", nil }, Keyring: f.ring, Origins: []string{"*"}}); err == nil {
-		t.Error("wildcard origin accepted")
-	}
-}
-
-func TestLeaveAndDelete(t *testing.T) {
+func TestLeaveByEndingTheStream(t *testing.T) {
 	f := newFix(t, nil)
 	c := f.create("alice")
 	g := f.join(c.Room)
-	ev, _ := f.stream(c.Room, c.Token)
-	next(t, ev) // sys.join
-	if resp, _ := f.req("DELETE", "/rooms/"+c.Room, g.Token, nil); resp.StatusCode != 403 {
-		t.Fatalf("guest closing the room: %d", resp.StatusCode)
+	host := f.open(c.Room, c.Token)
+	host.next(t) // sys.knock
+	host.next(t) // sys.join
+	gs := f.open(c.Room, g.Token)
+	gs.next(t)
+	// a guest cannot close the room
+	if _, err := f.c.CloseRoom(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room}); code(err) != codes.PermissionDenied {
+		t.Fatalf("guest closing the room: %v", err)
 	}
-	if resp, _ := f.req("POST", "/rooms/"+c.Room+"/leave", g.Token, nil); resp.StatusCode != 204 {
-		t.Fatalf("leave: %d", resp.StatusCode)
+	if err := gs.st.CloseSend(); err != nil { // half-close: leaving
+		t.Fatal(err)
 	}
-	if e := next(t, ev); e.Kind != "sys.leave" || e.From != g.Peer {
-		t.Fatalf("%+v", e)
+	if e := host.next(t); e.Kind != "sys.leave" || e.From != g.Peer {
+		t.Fatalf("%v", e)
 	}
-	if st := f.send(c.Room, g.Token, MessageRequest{From: g.Peer, To: "host", Kind: "x"}); st != 401 {
-		t.Fatalf("a guest that left can still send: %d", st)
+	if _, err := f.c.RoomCredentials(tctx(t, g.Token), &turnv1.RoomRef{Room: c.Room}); code(err) != codes.Unauthenticated {
+		t.Fatalf("a guest that left still has a token: %v", err)
 	}
-	if resp, _ := f.req("DELETE", "/rooms/"+c.Room, c.Token, nil); resp.StatusCode != 204 {
-		t.Fatalf("delete: %d", resp.StatusCode)
+	// the host's stream ending closes the room
+	g2 := f.join(c.Room)
+	g2s := f.open(c.Room, g2.Token)
+	g2s.next(t)
+	host.next(t)
+	host.next(t)
+	_ = host.st.CloseSend()
+	if e := g2s.next(t); e.Kind != "sys.closed" {
+		t.Fatalf("%v", e)
 	}
-	if e := next(t, ev); e.Kind != "closed" {
-		t.Fatalf("%+v", e)
+	if f.s.Rooms() != 0 {
+		t.Fatal("the room outlived its host's stream")
+	}
+}
+
+func TestCloseRoom(t *testing.T) {
+	f := newFix(t, nil)
+	c := f.create("alice")
+	g := f.join(c.Room)
+	s := f.open(c.Room, g.Token)
+	s.next(t)
+	if _, err := f.c.CloseRoom(tctx(t, c.Token), &turnv1.RoomRef{Room: c.Room}); err != nil {
+		t.Fatal(err)
+	}
+	if e := s.next(t); e.Kind != "sys.closed" {
+		t.Fatalf("%v", e)
 	}
 }
 

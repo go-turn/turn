@@ -109,7 +109,20 @@ jobs:
         with: { go-version-file: go.mod, check-latest: true, cache: true }
       - uses: actions/setup-node@v7
         with: { node-version: 22 }
-      - run: GOOS=js GOARCH=wasm go test -count=1 -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./rendezvous/client
+      # builds the client's wasm test binary and runs it under node against a real server
+      - run: go test -count=1 -v -run '^TestWasmEndToEnd$' ./rendezvous/client
+
+  proto:
+    name: protobuf is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - run: go run github.com/bufbuild/buf/cmd/buf@v1.75.0 lint proto
+      - run: go run github.com/bufbuild/buf/cmd/buf@v1.75.0 generate
+      # --intent-to-add makes a generated file that is not committed show in the diff
+      - run: git add --intent-to-add proto && git diff --exit-code -- proto
 
   govulncheck:
     runs-on: ubuntu-latest

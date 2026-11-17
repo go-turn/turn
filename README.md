@@ -35,22 +35,52 @@ environment variable. Repeat `--session-key-file` / `--turn-secret-file` to
 rotate: the first signs, the others only verify. Register
 `<public-url>/callback` as the client's redirect URI at the issuer.
 
-| Endpoint | Auth | |
-|---|---|---|
-| `GET /login?origin=<allowed origin>` | none | starts the OIDC login (code + PKCE) in a popup; an origin not in `--allowed-origin` is a 400, never a redirect |
-| `GET /callback` | the login's cookie | page that `postMessage`s `{type:"turnd-session",token,expires}` (or `{type:"turnd-error",error}`) to `window.opener`, target origin = the allowlisted one |
-| `POST /credentials` | session or issuer access token | `{iceServers:[{urls},{urls,username,credential}],ttl}` |
-| `POST /rooms` | session | `{room,peer:"host",token,expires}` |
-| `POST /rooms/{id}/join` | the room ID | `{room,peer,host,token,expires}` |
-| `GET /rooms/{id}/events` | peer token | SSE: `event: message`, `data: {seq,from,to,kind,body}`; `event: closed` at the end |
-| `POST /rooms/{id}/messages` | peer token | `{from,to,kind,body}` → 204 |
-| `POST /rooms/{id}/credentials` | peer token | as `/credentials`, expiring with the room, charged to the host |
-| `POST /rooms/{id}/leave`, `DELETE /rooms/{id}` | peer token | leave; host closes |
+The API is gRPC, [`proto/turn/v1/turnd.proto`](proto/turn/v1/turnd.proto)
+(service `turn.v1.Turnd`, generated code committed, CI regenerates it and fails
+on a diff). A plain `grpc.Server` is served over a WebSocket at `/grpc`
+([grpc-transports/websocket](https://github.com/grpc-transports/websocket)), which
+is what a browser can speak, including the bidirectional stream. The WebSocket
+upgrade enforces the exact origin allowlist (scheme and port included); a client
+with no `Origin` header is a native client. Only browser navigations stay HTTP:
 
-Tokens go in `Authorization: Bearer`, never in a URL. The credential scheme is
+| HTTP | |
+|---|---|
+| `GET /login?origin=<allowed origin>` | starts the OIDC login (code + PKCE) in a popup; an origin not in `--allowed-origin` is a 400, never a redirect |
+| `GET /callback` | page that `postMessage`s `{type:"turnd-session",token,expires}` (or `{type:"turnd-error",error}`) to `window.opener`, target origin = the allowlisted one |
+| `GET /healthz` | `ok` |
+
+| RPC | token (`authorization: Bearer …` metadata, never a URL) | |
+|---|---|---|
+| `Credentials` | session, or issuer access token | `IceServers{ice_servers[{urls,username,credential}], ttl}` |
+| `CreateRoom` | session or access token | `{room, peer:"host", token, expires}`; the room ID is 128 random bits |
+| `JoinRoom{room,name}` | none: the room ID | `{peer, host, token, expires, pending:true}`; the guest is **pending** |
+| `Admit{room,peer}` / `Deny{room,peer}` | host token | admit a pending guest / refuse it (or remove an admitted one): its token is dead |
+| `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the host |
+| `CloseRoom{room}` | host token | ends the room |
+| `Room(stream Envelope) returns (stream Envelope)` | peer token + `x-turn-room` metadata | the room's one stream: events down, messages up; ending it is leaving |
+
+A leaked room link lets a stranger **knock**, not enter. A pending guest only
+receives: it cannot send, cannot get credentials, counts against a separate
+pending cap and a pending TTL. The host sees `sys.knock` (`from` = the guest,
+`body` = its display name, at most 64 characters, no control characters) and
+decides; only admitted guests count against `--max-guests` and produce `sys.join`.
+Other system events: `sys.admitted`, `sys.denied`, `sys.leave`, `sys.closed`, and
+`sys.error` (a message the other peer could not take; the stream stays open).
+A message that breaks the protocol (too large, a spoofed `from`, a bad kind, a
+pending sender, guest to guest) ends the sender's stream with a status:
+`RESOURCE_EXHAUSTED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`. Other refusals:
+`UNAUTHENTICATED` (no or dead token), `NOT_FOUND`, `ALREADY_EXISTS` (a second
+stream for one peer), `FAILED_PRECONDITION` (already admitted), `UNAVAILABLE`
+(server full).
+
+The credential scheme is
 [draft-uberti-behave-turn-rest-00](https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00).
-The browser client is `github.com/go-turn/turn/rendezvous/client` (fetch through
-`syscall/js`).
+The Go client, for the browser and native, is
+`github.com/go-turn/turn/rendezvous/client`: `Create`, `Join(name)` (blocks until
+admitted, `ErrDenied` otherwise), `Admit`, `Deny`, `Send`, `Recv`, `Credentials`,
+`Close`. It is a real grpc-go client dialed over the browser's WebSocket through
+`syscall/js`; it adds about 16 MB to a wasm binary (4.9 MB gzipped), almost all of
+it grpc, which the go-tex playground already ships through go-crdt/collab.
 
 ## Package `stun`
 
