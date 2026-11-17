@@ -74,6 +74,7 @@ func RootCmd() *cobra.Command {
 	f.StringVar(&cfg.Relay.STUNListen, "stun-listen", "", "serve STUN and TURN over UDP here, e.g. :3478 (relay off when no relay listen flag is set)")
 	f.StringVar(&cfg.Relay.TURNTCPListen, "turn-tcp-listen", "", "serve TURN over TCP here, e.g. :3478")
 	f.StringVar(&cfg.Relay.TURNSListen, "turns-listen", "", "serve TURN over TLS here, e.g. :443 (uses --tls-cert-file and --tls-key-file)")
+	f.StringArrayVar(&cfg.Relay.ProxyFrom, "proxy-protocol-from", nil, "accept a PROXY protocol v2 (or v1) header on TCP and TLS connections from this prefix, e.g. 127.0.0.1/32 for Caddy on the same host (repeat; off when empty; never UDP)")
 	f.UintVar(&cfg.Relay.PortMin, "relay-port-min", 0, "lowest relayed UDP port (0 with --relay-port-max 0: any)")
 	f.UintVar(&cfg.Relay.PortMax, "relay-port-max", 0, "highest relayed UDP port")
 	f.DurationVar(&cfg.SessionTTL, "session-ttl", time.Hour, "lifetime of a session token")

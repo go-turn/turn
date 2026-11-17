@@ -132,9 +132,12 @@ the comparison with coturn on one core is still to do.
 `turnd` starts the relay when a listen flag is set: `--relay-ip` (required;
 `--relay-advertise-ip` behind a NAT), `--stun-listen :3478` (UDP),
 `--turn-tcp-listen :3478`, `--turns-listen :443` (TLS, with `--tls-cert-file` and
-`--tls-key-file`), `--relay-port-min` / `--relay-port-max`. Its credential hook
-is the keyring's `Auth`, so the minted `<expiry>:<tag>.<subject>` usernames are
-what the relay accepts (the tag says which of the rotating secrets signed it).
+`--tls-key-file`), `--relay-port-min` / `--relay-port-max`, and
+`--proxy-protocol-from <prefix>` (repeatable) to accept a PROXY protocol v2 header
+([haproxy's specification](https://github.com/haproxy/haproxy/blob/master/doc/proxy-protocol.txt))
+on TCP and TLS connections from that prefix. Its credential hook is the
+keyring's `Auth`, so the minted `<expiry>:<tag>.<subject>` usernames are what the
+relay accepts (the tag says which of the rotating secrets signed it).
 
 ## Deploying
 
@@ -149,9 +152,52 @@ Ports to open, at the host firewall **and** at the cloud security group:
 | UDP range | relayed addresses (`--relay-port-min 49160 --relay-port-max 49999`) |
 | TCP 443 | HTTPS: `/login`, `/callback`, `/grpc`, through the host's reverse proxy to `--listen 127.0.0.1:8080` (the proxy must pass WebSocket upgrades) |
 
-TURN over TLS and HTTPS cannot share 443 on one address without a demultiplexer;
-5349 is the IANA port for `turns:`. A network that lets only 443 out needs a
-second address for `--turns-listen :443`.
+### TURN over TLS on 443, beside HTTPS
+
+TURN over TLS can share 443 with the HTTPS site when Caddy demultiplexes by SNI
+with [caddy-l4](https://github.com/mholt/caddy-l4). Caddy terminates TLS for
+`turn.example.org` itself and proxies plain TCP to turnd with a PROXY protocol v2
+header, so turnd still sees the real client address (XOR-MAPPED-ADDRESS, quotas
+and logs). The build is
+`xcaddy build --with github.com/mholt/caddy-l4@v0.1.3`, pinned because caddy-l4
+calls itself experimental.
+
+```
+{
+    servers :443 {
+        listener_wrappers {
+            layer4 {
+                @turn tls sni turn.example.org
+                route @turn {
+                    tls
+                    proxy {
+                        proxy_protocol v2
+                        upstream tcp/127.0.0.1:3478
+                    }
+                }
+            }
+            tls
+        }
+    }
+}
+
+# A site block makes Caddy obtain the certificate that the `tls` handler above
+# presents for turn.example.org.
+turn.example.org {
+    respond "turnd relay" 200
+}
+```
+
+turnd runs `--turn-tcp-listen 127.0.0.1:3478 --proxy-protocol-from 127.0.0.1/32`.
+Clients use `turns:turn.example.org:443?transport=tcp`. The header is accepted
+only from the listed prefixes: a connection from one of them without a valid
+header is closed, and a header from any other source is never honoured. The
+Caddyfile follows caddy-l4's `docs/examples/combining_apps.md`; it has not been
+run against a Caddy here, only the header handling is tested (with pion's TCP
+client behind a proxy that prepends a v2 header). The separate `--turns-listen`
+(TLS handled by turnd, port 5349 or 443 on a second address) stays available
+for a host without Caddy; there the PROXY header, if any, precedes the
+ClientHello.
 
 Secrets are files readable by the service account only: 32+ random bytes for
 `--session-key-file`, 16+ for `--turn-secret-file`, the issuer's client secret

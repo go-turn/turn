@@ -22,6 +22,21 @@ type relayOptions struct {
 	// (turns:, port 443) with the TLS certificate flags.
 	STUNListen, TURNTCPListen, TURNSListen string
 	PortMin, PortMax                       uint
+	// ProxyFrom lists the prefixes (--proxy-protocol-from) whose TCP and TLS
+	// connections carry a PROXY protocol header; empty is off.
+	ProxyFrom []string
+}
+
+func (o relayOptions) proxyPrefixes() ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, s := range o.ProxyFrom {
+		p, err := netip.ParsePrefix(s)
+		if err != nil || p.Addr().Is4In6() {
+			return nil, fmt.Errorf("--proxy-protocol-from %q: want a prefix such as 127.0.0.1/32 or ::1/128", s)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func (o relayOptions) enabled() bool {
@@ -29,6 +44,12 @@ func (o relayOptions) enabled() bool {
 }
 
 func (o relayOptions) validate(tlsCert, tlsKey string) error {
+	if _, err := o.proxyPrefixes(); err != nil {
+		return err
+	}
+	if len(o.ProxyFrom) > 0 && o.TURNTCPListen == "" && o.TURNSListen == "" {
+		return errors.New("--proxy-protocol-from needs --turn-tcp-listen or --turns-listen (it never applies to UDP)")
+	}
 	if !o.enabled() {
 		if o.RelayIP != "" {
 			return errors.New("--relay-ip needs --stun-listen, --turn-tcp-listen or --turns-listen")
@@ -68,6 +89,10 @@ func runRelay(ctx context.Context, rc relayConfig) (func(), error) {
 	}
 	if o.RelayAdvertiseIP != "" {
 		cfg.RelayAdvertiseIP = netip.MustParseAddr(o.RelayAdvertiseIP)
+	}
+	var err error
+	if cfg.ProxyProtocolFrom, err = o.proxyPrefixes(); err != nil {
+		return nil, err
 	}
 	srv, err := server.New(cfg)
 	if err != nil {

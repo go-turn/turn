@@ -4,6 +4,7 @@ package interop
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -206,6 +207,98 @@ func TestPionAllocatePermissionChannelRoundTrip(t *testing.T) {
 			}
 			waitFor(t, "allocation deletion", func() bool { return h.srv.Stats().Allocations == 0 })
 		})
+	}
+}
+
+// TestPionThroughProxyProtocol puts a proxy between pion's TCP client and the
+// server, as Caddy (caddy-l4 with proxy_protocol v2) does: the proxy prepends
+// a v2 header naming the real client, and the server, which trusts it, uses
+// that address.
+func TestPionThroughProxyProtocol(t *testing.T) {
+	const realClient = "198.51.100.7:4242"
+	srv, err := server.New(server.Config{
+		Realm:             realm,
+		Auth:              func(u string) (string, bool) { return pass, u == user },
+		RelayIP:           netip.MustParseAddr("127.0.0.1"),
+		AllowPeers:        []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
+		ProxyProtocolFrom: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.ServeListener(backend)
+
+	front, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { front.Close() })
+	go func() { // the proxy
+		for {
+			c, err := front.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				b, err := net.Dial("tcp", backend.Addr().String())
+				if err != nil {
+					return
+				}
+				defer b.Close()
+				hdr := server.AppendProxyHeaderV2(nil, netip.MustParseAddrPort(realClient),
+					netip.MustParseAddrPort(backend.Addr().String()))
+				if _, err := b.Write(hdr); err != nil {
+					return
+				}
+				go io.Copy(b, c)
+				io.Copy(c, b)
+			}()
+		}
+	}()
+
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Close() })
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, from, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			peer.WriteToUDP(buf[:n], from)
+		}
+	}()
+
+	nc, err := net.Dial("tcp", front.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := turn.NewSTUNConn(nc)
+	defer conn.Close()
+	c := newClient(t, front.Addr().String(), conn)
+	mapped, err := c.SendBindingRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapped.String() != realClient {
+		t.Fatalf("server saw the client as %v, want the header's %s", mapped, realClient)
+	}
+	relay, err := c.Allocate()
+	if err != nil {
+		t.Fatalf("allocate through the proxy: %v", err)
+	}
+	defer relay.Close()
+	if !roundTrip(t, relay, peer.LocalAddr(), []byte("via proxy protocol")) {
+		t.Fatal("no echo through the proxied relay")
 	}
 }
 

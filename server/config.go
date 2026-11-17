@@ -60,6 +60,17 @@ type Config struct {
 	HandshakeTimeout      time.Duration // TCP/TLS idle limit before any allocation (30 s)
 	RelayBufSize          int           // largest relayed datagram (4096)
 
+	// ProxyProtocolFrom lists the sources (a load balancer such as Caddy or
+	// HAProxy) whose TCP and TLS connections must begin with a PROXY protocol
+	// header (v2 or v1) naming the real client. A connection from a listed
+	// source without a valid header is closed; a header from any other
+	// source is never honoured (the connection is closed). Once honoured, the
+	// header's address is the client address for XOR-MAPPED-ADDRESS, quotas
+	// and logs. For ServeTLS the header precedes the ClientHello (TLS is
+	// terminated here, not by the proxy). Empty means PROXY protocol is off.
+	// It never applies to UDP.
+	ProxyProtocolFrom []netip.Prefix
+
 	// Logger receives debug and warning records (default: discard).
 	Logger *slog.Logger
 	// Now replaces time.Now (tests).
@@ -124,6 +135,11 @@ func (c *Config) withDefaults() error {
 	}
 	if c.RelayBufSize < 576 || c.RelayBufSize > 65000 {
 		return errors.New("server: RelayBufSize outside 576..65000")
+	}
+	for _, p := range c.ProxyProtocolFrom {
+		if !p.IsValid() || p.Addr().Is4In6() {
+			return errors.New("server: invalid prefix in ProxyProtocolFrom (write an IPv4 prefix in dotted form)")
+		}
 	}
 	if c.Logger == nil {
 		c.Logger = slog.New(slog.DiscardHandler)
