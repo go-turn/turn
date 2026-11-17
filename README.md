@@ -16,7 +16,10 @@ One daemon, `turnd`, serves on one host:
 It is the relay the [go-tex playground](https://go-tex.github.io/playground/)
 uses for live collaboration over [go-crdt/collab](https://github.com/go-crdt/collab).
 
-Status: under construction — the design is [#1](https://github.com/go-turn/turn/issues/1).
+Status: v0.1 — the relay, the credentials, the login and the rendezvous work and
+are tested; the go-tex playground is not wired to it yet. The design is
+[#1](https://github.com/go-turn/turn/issues/1); what is still open is in the
+[tracker](https://github.com/go-turn/turn/issues).
 
 ## The HTTP half (`turnd`)
 
@@ -79,8 +82,10 @@ The Go client, for the browser and native, is
 `github.com/go-turn/turn/rendezvous/client`: `Create`, `Join(name)` (blocks until
 admitted, `ErrDenied` otherwise), `Admit`, `Deny`, `Send`, `Recv`, `Credentials`,
 `Close`. It is a real grpc-go client dialed over the browser's WebSocket through
-`syscall/js`; it adds about 16 MB to a wasm binary (4.9 MB gzipped), almost all of
-it grpc, which the go-tex playground already ships through go-crdt/collab.
+`syscall/js`; it adds about 16 MB to a wasm binary (3.5 MB more gzipped), almost
+all of it grpc. go-crdt/collab's js/wasm build does not link grpc, so a page that
+does not otherwise ship it should load this client in a separate wasm, fetched
+when a collaboration starts.
 
 ## Package `stun`
 
@@ -128,8 +133,30 @@ the comparison with coturn on one core is still to do.
 `--relay-advertise-ip` behind a NAT), `--stun-listen :3478` (UDP),
 `--turn-tcp-listen :3478`, `--turns-listen :443` (TLS, with `--tls-cert-file` and
 `--tls-key-file`), `--relay-port-min` / `--relay-port-max`. Its credential hook
-is the keyring's `Auth`, so the minted `username:expiry` credentials are what the
-relay accepts.
+is the keyring's `Auth`, so the minted `<expiry>:<tag>.<subject>` usernames are
+what the relay accepts (the tag says which of the rotating secrets signed it).
+
+## Deploying
+
+One host, one binary (`CGO_ENABLED=0 go install github.com/go-turn/turn/cmd/turnd@latest`).
+Ports to open, at the host firewall **and** at the cloud security group:
+
+| port | for |
+|---|---|
+| UDP 3478 | STUN and TURN over UDP (`--stun-listen :3478`) |
+| TCP 3478 | TURN over TCP (`--turn-tcp-listen :3478`) |
+| TCP 5349 | TURN over TLS (`--turns-listen :5349`), for networks that block UDP |
+| UDP range | relayed addresses (`--relay-port-min 49160 --relay-port-max 49999`) |
+| TCP 443 | HTTPS: `/login`, `/callback`, `/grpc`, through the host's reverse proxy to `--listen 127.0.0.1:8080` (the proxy must pass WebSocket upgrades) |
+
+TURN over TLS and HTTPS cannot share 443 on one address without a demultiplexer;
+5349 is the IANA port for `turns:`. A network that lets only 443 out needs a
+second address for `--turns-listen :443`.
+
+Secrets are files readable by the service account only: 32+ random bytes for
+`--session-key-file`, 16+ for `--turn-secret-file`, the issuer's client secret
+for `--client-secret-file`. Register `<public-url>/callback` as the redirect URI
+of `--client-id` at the issuer.
 
 ## Licence
 
