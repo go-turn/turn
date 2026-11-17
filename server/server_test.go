@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	mrand "math/rand/v2"
 	"net"
 	"net/netip"
 	"testing"
@@ -338,14 +339,12 @@ func TestQuotas(t *testing.T) {
 func freeWindow(t *testing.T, n int) int {
 	t.Helper()
 	for attempt := 0; attempt < 50; attempt++ {
-		first, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		base := first.LocalAddr().(*net.UDPAddr).Port
-		held := []net.PacketConn{first}
+		// Below every OS's ephemeral range, so the server and the test
+		// clients (which take ephemeral ports) cannot land in the window.
+		base := 20000 + mrand.IntN(9000)
+		var held []net.PacketConn
 		ok := true
-		for i := 1; i < n; i++ {
+		for i := 0; i < n; i++ {
 			pc, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", base+i))
 			if err != nil {
 				ok = false
