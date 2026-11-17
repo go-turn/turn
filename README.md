@@ -1,4 +1,12 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-turn/brand/main/social/go-turn.png" alt="go-turn/turn" width="720"></p>
+
 # turn
+
+[![CI](https://github.com/go-turn/turn/actions/workflows/ci.yml/badge.svg)](https://github.com/go-turn/turn/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-turn/turn.svg)](https://pkg.go.dev/github.com/go-turn/turn)
+[![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
+📖 **[go-turn.github.io](https://go-turn.github.io/)** · **[Documentation](https://go-turn.github.io/docs/)**
 
 **STUN and TURN in pure Go**, for WebRTC peers that cannot reach each other
 directly — a symmetric NAT, a full-tunnel VPN, a network that only lets HTTPS
