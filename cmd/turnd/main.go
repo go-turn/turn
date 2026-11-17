@@ -87,6 +87,7 @@ func RootCmd() *cobra.Command {
 	f.IntVar(&cfg.Limits.MaxRooms, "max-rooms", 1024, "live rooms on the server")
 	// the test hook is reached through a package variable set before Execute.
 	ready = readyHook
+	cmd.AddCommand(mintCmd())
 	return cmd
 }
 
