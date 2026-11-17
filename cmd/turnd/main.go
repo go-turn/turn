@@ -1,5 +1,5 @@
-// Command turnd serves the HTTP half of go-turn: the OpenID Connect login,
-// ephemeral TURN credentials and the rendezvous. The TURN relay itself starts
+// Command turnd serves go-turn: the OpenID Connect login, ephemeral TURN
+// credentials, the rendezvous, and (with the relay flags) the STUN/TURN relay
 // at the marked seam in app.go.
 //
 // Every secret is read from a file; none is accepted as a flag value or from
@@ -69,6 +69,13 @@ func RootCmd() *cobra.Command {
 	f.StringVar(&cfg.Realm, "realm", "", "TURN realm (default: the public URL's host)")
 	f.StringArrayVar(&cfg.STUNURLs, "stun-uri", nil, "STUN URL advertised to clients, e.g. stun:turn.example.org:3478 (repeat)")
 	f.StringArrayVar(&cfg.TURNURLs, "turn-uri", nil, "TURN URL advertised to clients, e.g. turns:turn.example.org:443?transport=tcp (repeat)")
+	f.StringVar(&cfg.Relay.RelayIP, "relay-ip", "", "address relayed UDP sockets bind to (required with a relay listen flag)")
+	f.StringVar(&cfg.Relay.RelayAdvertiseIP, "relay-advertise-ip", "", "address reported to clients as the relayed address when it differs from --relay-ip")
+	f.StringVar(&cfg.Relay.STUNListen, "stun-listen", "", "serve STUN and TURN over UDP here, e.g. :3478 (relay off when no relay listen flag is set)")
+	f.StringVar(&cfg.Relay.TURNTCPListen, "turn-tcp-listen", "", "serve TURN over TCP here, e.g. :3478")
+	f.StringVar(&cfg.Relay.TURNSListen, "turns-listen", "", "serve TURN over TLS here, e.g. :443 (uses --tls-cert-file and --tls-key-file)")
+	f.UintVar(&cfg.Relay.PortMin, "relay-port-min", 0, "lowest relayed UDP port (0 with --relay-port-max 0: any)")
+	f.UintVar(&cfg.Relay.PortMax, "relay-port-max", 0, "highest relayed UDP port")
 	f.DurationVar(&cfg.SessionTTL, "session-ttl", time.Hour, "lifetime of a session token")
 	f.DurationVar(&cfg.CredTTL, "cred-ttl", time.Hour, "lifetime of host TURN credentials (a guest's never outlive the room)")
 	f.DurationVar(&cfg.Limits.RoomTTL, "room-ttl", time.Hour, "lifetime of a room")
@@ -95,7 +102,8 @@ func serve(ctx context.Context, cmd *cobra.Command, cfg config, ready func(strin
 	if err != nil {
 		return err
 	}
-	stopRelay, err := startRelay(ctx, relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil)})
+	stopRelay, err := startRelay(ctx, relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil),
+		Options: cfg.Relay, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile})
 	if err != nil {
 		return fmt.Errorf("relay: %w", err)
 	}

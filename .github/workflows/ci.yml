@@ -48,6 +48,32 @@ jobs:
         with: { go-version-file: go.mod, check-latest: true, cache: true }
       - run: go test -race -count=1 ./...
 
+  fuzz:
+    name: fuzz smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pkg: ./stun, target: FuzzDecode }
+          - { pkg: ./stun, target: FuzzChannelData }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - run: go test ${{ matrix.pkg }} -fuzz '^${{ matrix.target }}$' -fuzztime 30s
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - run: go test -count=1 -covermode=atomic -coverprofile=cover.out ./...
+      - run: go tool cover -func=cover.out
+      - uses: actions/upload-artifact@v4
+        with: { name: coverage, path: cover.out }
+
   wasm:
     name: js/wasm build
     runs-on: ubuntu-latest
