@@ -1,6 +1,6 @@
 module github.com/go-turn/turn
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/go-authn/oidc v0.7.0
