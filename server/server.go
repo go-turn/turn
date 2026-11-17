@@ -26,6 +26,7 @@ type Server struct {
 
 	mu      sync.RWMutex
 	allocs  map[fiveTuple]*allocation
+	byPort  map[uint16]*allocation // by relayed port: every relay socket binds RelayIP
 	perUser map[string]int
 	closers map[io.Closer]struct{}
 	closed  bool
@@ -60,6 +61,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:     cfg,
 		pol:     newPolicy(cfg.AllowPeers, append([]netip.Addr{cfg.RelayIP}, cfg.OwnAddrs...)),
 		allocs:  make(map[fiveTuple]*allocation),
+		byPort:  make(map[uint16]*allocation),
 		perUser: make(map[string]int),
 		closers: make(map[io.Closer]struct{}),
 		done:    make(chan struct{}),
@@ -355,6 +357,18 @@ func (s *Server) serveConn(raw net.Conn, tlsCfg *tls.Config) {
 	}
 }
 
+// liveRelayPort returns the allocation whose relayed port is port, or nil when
+// there is none or it has expired (the janitor removes it up to a second later).
+func (s *Server) liveRelayPort(port uint16) *allocation {
+	s.mu.RLock()
+	a := s.byPort[port]
+	s.mu.RUnlock()
+	if a == nil || a.expired(s.cfg.Now()) {
+		return nil
+	}
+	return a
+}
+
 func (s *Server) lookup(k fiveTuple) *allocation {
 	s.mu.RLock()
 	a := s.allocs[k]
@@ -423,6 +437,9 @@ func (s *Server) removeAlloc(a *allocation) {
 	s.mu.Lock()
 	if s.allocs[a.key] == a {
 		delete(s.allocs, a.key)
+		if s.byPort[a.relayAddr.Port()] == a {
+			delete(s.byPort, a.relayAddr.Port())
+		}
 		if s.perUser[a.user]--; s.perUser[a.user] <= 0 {
 			delete(s.perUser, a.user)
 		}

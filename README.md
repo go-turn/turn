@@ -120,7 +120,10 @@ go srv.ServeTLS(tcpListener443, tlsCfg) // turns:
 By default the server never relays to or from loopback, `0.0.0.0/8`, RFC 1918,
 `100.64/10`, link-local (169.254.169.254 included), multicast, ULA, the
 NAT64/6to4/Teredo forms, IPv4-mapped forms of those, or its own addresses: it
-answers 403. `Config.AllowPeers` re-enables ranges (tests use `127.0.0.0/8`).
+answers 403. The one exception is two clients relaying to each other: an own
+address is a peer only at the relayed port of a live allocation (checked when the
+permission or channel is made and again on every datagram, which is handed over in
+memory), so SSH, 443 and the TURN listeners stay unreachable through the relay. `Config.AllowPeers` re-enables ranges (tests use `127.0.0.0/8`).
 Bounds, all in `Config`: allocations per user and in total, lifetime cap,
 per-allocation byte rate, relay port range, permissions and channels per
 allocation, concurrent connections, idle and handshake timeouts, datagram size.
@@ -239,9 +242,7 @@ FAIL turns:turn.example.org:443?transport=tcp stage=connect: tls: failed to veri
 One line per server, `PASS` or `FAIL` with the stage that failed (`connect`,
 `binding`, `allocate`, `permission`, `relay A->B`, `relay B->A`); the exit status
 is 1 if any failed. `--realm` is turnd's `--realm`; a mismatch is reported at
-`allocate`. The server refuses to relay to its own addresses by default (see
-`server`), so a relay whose relayed address is one of its own interface addresses
-fails at `permission` with `403`.
+`allocate`.
 
 ## Licence
 
