@@ -52,6 +52,18 @@ Tokens go in `Authorization: Bearer`, never in a URL. The credential scheme is
 The browser client is `github.com/go-turn/turn/rendezvous/client` (fetch through
 `syscall/js`).
 
+## Package `stun`
+
+The RFC 8489 message codec with the RFC 8656 TURN attributes and ChannelData
+framing. Decoding is strict and bounded: it refuses a length that overruns the
+datagram, framing that is not 4-aligned, and more than `MaxAttributes` (64)
+attributes; attributes after `MESSAGE-INTEGRITY` are not visible. It covers
+`MESSAGE-INTEGRITY` (HMAC-SHA1), `MESSAGE-INTEGRITY-SHA256`, `FINGERPRINT`, the
+long-term key derivations (MD5 and SHA-256) and `USERHASH`. Tested against the
+RFC 5769 vectors (decode, verify, byte-identical re-encode); `FuzzDecode` and
+`FuzzChannelData` have a committed seed corpus under `stun/testdata/fuzz`.
+SASLprep (OpaqueString) is the caller's job.
+
 ## Licence
 
 BSD-3-Clause.
