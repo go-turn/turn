@@ -194,10 +194,12 @@ func TestPionAllocatePermissionChannelRoundTrip(t *testing.T) {
 			if !roundTrip(t, relay, peer, big) {
 				t.Fatal("no echo over the bound channel")
 			}
-			st := h.srv.Stats()
-			if st.PacketsToPeer < 2 || st.PacketsToClient < 2 {
-				t.Fatalf("stats %+v", st)
-			}
+			// The counters are bumped after the socket write, so the echo
+			// can be read before the count; wait for it.
+			waitFor(t, "relay counters", func() bool {
+				st := h.srv.Stats()
+				return st.PacketsToPeer >= 2 && st.PacketsToClient >= 2
+			})
 			// Closing the relay sends Refresh with LIFETIME 0.
 			if err := relay.Close(); err != nil {
 				t.Fatal(err)

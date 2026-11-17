@@ -94,6 +94,13 @@ binds a channel and round-trips data through the server over UDP and TCP.
 `go test -bench . ./server` prints allocations/s and relayed packets/s;
 the comparison with coturn on one core is still to do.
 
+`turnd` starts the relay when a listen flag is set: `--relay-ip` (required;
+`--relay-advertise-ip` behind a NAT), `--stun-listen :3478` (UDP),
+`--turn-tcp-listen :3478`, `--turns-listen :443` (TLS, with `--tls-cert-file` and
+`--tls-key-file`), `--relay-port-min` / `--relay-port-max`. Its credential hook
+is the keyring's `Auth`, so the minted `username:expiry` credentials are what the
+relay accepts.
+
 ## Licence
 
 BSD-3-Clause.

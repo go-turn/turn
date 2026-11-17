@@ -33,6 +33,7 @@ type config struct {
 	STUNURLs, TURNURLs                 []string
 	SessionTTL, CredTTL                time.Duration
 	Limits                             rendezvous.Limits
+	Relay                              relayOptions
 }
 
 // relayConfig is what the TURN relay needs from the HTTP half.
@@ -42,17 +43,18 @@ type relayConfig struct {
 	// username against the current clock and the ring of secrets and returns the
 	// password (draft-uberti-behave-turn-rest-00 section 4.2).
 	Auth func(username string) (password string, ok bool)
+	// Options are the relay's listen addresses; TLSCertFile and TLSKeyFile
+	// are the certificate for --turns-listen.
+	Options                 relayOptions
+	TLSCertFile, TLSKeyFile string
 }
 
 // ---- SEAM: TURN relay -------------------------------------------------------
-// The owning session wires the relay here once go-turn/turn's server package
-// (stun/ and server/) has merged: build server.Server from
-// server.Config{Realm: rc.Realm, Auth: rc.Auth}, start it, and return a stop
-// function that shuts it down. Until then no relay runs; the HTTP half is
-// complete without it.
-var startRelay = func(ctx context.Context, rc relayConfig) (stop func(), err error) {
-	return func() {}, nil
-}
+// runRelay (relay.go) builds server.Server from
+// server.Config{Realm: rc.Realm, Auth: rc.Auth}, serves it on the sockets
+// named by the --stun-listen, --turn-tcp-listen and --turns-listen flags and
+// returns a stop function. With none of them set no relay runs.
+var startRelay = runRelay
 
 // ---- end of seam ------------------------------------------------------------
 
@@ -124,6 +126,9 @@ func (c *config) validate() error {
 	}
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
 		return errors.New("--tls-cert-file and --tls-key-file go together")
+	}
+	if err := c.Relay.validate(c.TLSCertFile, c.TLSKeyFile); err != nil {
+		return err
 	}
 	u, err := url.Parse(c.PublicURL)
 	if err != nil || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
