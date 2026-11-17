@@ -1,0 +1,4 @@
+github.com/go-authn/oidc v0.7.0 h1:PrEjnAj/QEeNMzPg2Y8DSSQX9fJwsblKpWWZHmetjMA=
+github.com/go-authn/oidc v0.7.0/go.mod h1:H/Hodeu9kh/Xz3y51XfYu6MZdMJaNfXClyVH0GTUebE=
+github.com/go-authn/rp v0.4.0 h1:HnhkmxVTkgVPsm+z7VoLM91qJEj3TCMYHiPAI2f+IPc=
+github.com/go-authn/rp v0.4.0/go.mod h1:bTku1Ufwg5hoWlNHJnwxh9IATKYivxwly1qH+s5Ww+M=
