@@ -207,6 +207,16 @@ func (m *Message) visible(i int) bool {
 	return true
 }
 
+// Each calls f for every usable attribute, in order (attributes that RFC 8489
+// 14.5/14.6 say to ignore are skipped).
+func (m *Message) Each(f func(Attribute)) {
+	for i := range m.Attrs {
+		if m.visible(i) {
+			f(m.Attrs[i])
+		}
+	}
+}
+
 // Get returns the first usable attribute of type t.
 func (m *Message) Get(t AttrType) ([]byte, bool) {
 	for i := range m.Attrs {

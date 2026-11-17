@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net/netip"
 )
 
 // ChannelData framing, RFC 8656 section 12.4.
@@ -60,6 +61,25 @@ func (c ChannelData) AppendTo(dst []byte, pad bool) []byte {
 			dst = append(dst, 0)
 		}
 	}
+	return dst
+}
+
+// AppendDataIndication appends a Data indication (RFC 8656 11.4) carrying
+// XOR-PEER-ADDRESS and DATA without building a Message, for the relay hot
+// path. data must be shorter than 65500 bytes.
+func AppendDataIndication(dst []byte, tx TxID, peer netip.AddrPort, data []byte) []byte {
+	start := len(dst)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(0x10|MethodData)) // class indication
+	dst = append(dst, 0, 0)
+	dst = binary.BigEndian.AppendUint32(dst, MagicCookie)
+	dst = append(dst, tx[:]...)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(AttrXORPeerAddress))
+	lenAt := len(dst)
+	dst = append(dst, 0, 0)
+	dst = AppendAddress(dst, peer, true, tx)
+	binary.BigEndian.PutUint16(dst[lenAt:], uint16(len(dst)-lenAt-2))
+	dst = appendAttr(dst, AttrData, data, 0)
+	binary.BigEndian.PutUint16(dst[start+2:], uint16(len(dst)-start-HeaderSize))
 	return dst
 }
 
