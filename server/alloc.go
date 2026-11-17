@@ -135,6 +135,29 @@ func (a *allocation) fromClientSend(peer netip.AddrPort, data []byte) {
 }
 
 func (a *allocation) toPeer(peer netip.AddrPort, data []byte) {
+	// A peer at an address of this server is another allocation's relayed port.
+	// It is looked up now, not trusted from the permission: permissions are per
+	// IP, and the allocation may have expired since. The datagram is handed over
+	// in memory, so it needs neither the OS to loop it back nor a NAT to hairpin
+	// the advertised address.
+	if a.s.pol.isOwn(peer.Addr()) {
+		if t := a.s.liveRelayPort(peer.Port()); t != nil {
+			if len(data) >= a.s.cfg.RelayBufSize {
+				a.s.st.dropped.Add(1)
+				return
+			}
+			buf := make([]byte, 4+len(data)+4)
+			copy(buf[4:], data)
+			var out []byte
+			t.toClient(buf, len(data), a.relayAddr, &out)
+			a.s.st.toPeer.Add(1)
+			return
+		}
+		if !a.s.pol.allowlisted(peer.Addr()) {
+			a.s.st.dropped.Add(1) // no live allocation there: never the OS socket
+			return
+		}
+	}
 	if _, err := a.relay.WriteToUDPAddrPort(data, peer); err != nil {
 		a.s.st.dropped.Add(1)
 		return
@@ -149,7 +172,6 @@ func (a *allocation) readLoop() {
 	// 4 bytes of ChannelData header in front, padding room behind.
 	buf := make([]byte, 4+size+4)
 	var out []byte
-	stream := a.tr.isStream()
 	failures := 0
 	for {
 		n, src, err := a.relay.ReadFromUDPAddrPort(buf[4 : 4+size])
@@ -169,42 +191,57 @@ func (a *allocation) readLoop() {
 			a.s.st.dropped.Add(1)
 			continue
 		}
-		now := a.s.cfg.Now()
-		a.mu.Lock()
-		ok := a.permittedLocked(src.Addr(), now) && a.rate.allow(n, now)
-		var ch *channel
-		if ok {
-			if c := a.byPeer[src]; c != nil && now.Before(c.expires) {
-				ch = c
-			}
-		}
-		a.mu.Unlock()
-		if !ok {
+		// Another allocation's traffic arrives in memory (toPeer). Over the
+		// socket, a datagram from an address of this server is some other
+		// process of the host, never a peer.
+		if a.s.pol.ownRestricted(src.Addr()) {
 			a.s.st.dropped.Add(1)
 			continue
 		}
-		var frame []byte
-		if ch != nil {
-			binary.BigEndian.PutUint16(buf[0:], ch.number)
-			binary.BigEndian.PutUint16(buf[2:], uint16(n))
-			end := 4 + n
-			if stream {
-				for ; end%4 != 0; end++ {
-					buf[end] = 0
-				}
-			}
-			frame = buf[:end]
-		} else {
-			var tx stun.TxID
-			binary.BigEndian.PutUint64(tx[0:], rand.Uint64())
-			binary.BigEndian.PutUint32(tx[8:], rand.Uint32())
-			out = stun.AppendDataIndication(out[:0], tx, src, buf[4:4+n])
-			frame = out
-		}
-		if err := a.tr.send(a.client, frame); err != nil {
-			a.s.st.dropped.Add(1)
-			continue
-		}
-		a.s.st.toClient.Add(1)
+		a.toClient(buf, n, src, &out)
 	}
+}
+
+// toClient relays the datagram buf[4:4+n] from peer src to the client when a
+// permission covers src: as ChannelData if a channel is bound to src, else as a
+// Data indication. buf has 4 bytes of room in front and 4 behind; out is
+// scratch for the indication.
+func (a *allocation) toClient(buf []byte, n int, src netip.AddrPort, out *[]byte) {
+	now := a.s.cfg.Now()
+	a.mu.Lock()
+	ok := a.permittedLocked(src.Addr(), now) && a.rate.allow(n, now)
+	var ch *channel
+	if ok {
+		if c := a.byPeer[src]; c != nil && now.Before(c.expires) {
+			ch = c
+		}
+	}
+	a.mu.Unlock()
+	if !ok {
+		a.s.st.dropped.Add(1)
+		return
+	}
+	var frame []byte
+	if ch != nil {
+		binary.BigEndian.PutUint16(buf[0:], ch.number)
+		binary.BigEndian.PutUint16(buf[2:], uint16(n))
+		end := 4 + n
+		if a.tr.isStream() {
+			for ; end%4 != 0; end++ {
+				buf[end] = 0
+			}
+		}
+		frame = buf[:end]
+	} else {
+		var tx stun.TxID
+		binary.BigEndian.PutUint64(tx[0:], rand.Uint64())
+		binary.BigEndian.PutUint32(tx[8:], rand.Uint32())
+		*out = stun.AppendDataIndication((*out)[:0], tx, src, buf[4:4+n])
+		frame = *out
+	}
+	if err := a.tr.send(a.client, frame); err != nil {
+		a.s.st.dropped.Add(1)
+		return
+	}
+	a.s.st.toClient.Add(1)
 }

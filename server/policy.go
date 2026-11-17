@@ -63,6 +63,32 @@ func (p *policy) addOwn(a netip.Addr) {
 	p.mu.Unlock()
 }
 
+// isOwn reports whether a is an address of this server.
+func (p *policy) isOwn(a netip.Addr) bool {
+	a = norm(a)
+	p.mu.RLock()
+	_, own := p.own[a]
+	p.mu.RUnlock()
+	return own
+}
+
+// allowlisted reports whether the operator allowed a explicitly.
+func (p *policy) allowlisted(a netip.Addr) bool {
+	a = norm(a)
+	for _, pr := range p.allow {
+		if pr.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownRestricted reports whether a is an address of this server that the
+// operator did not allowlist: reachable only at a live relayed port.
+func (p *policy) ownRestricted(a netip.Addr) bool {
+	return p.isOwn(a) && !p.allowlisted(a)
+}
+
 // permitted reports whether a may be a peer. An explicit allowlist entry wins
 // over every default refusal (it exists for tests on 127.0.0.1).
 func (p *policy) permitted(a netip.Addr) bool {

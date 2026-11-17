@@ -173,6 +173,23 @@ func TestProbePassesOverUDPTCPAndTLS(t *testing.T) {
 	}
 }
 
+// The server does not allowlist its own address (no AllowPeers): two
+// allocations on it relay to each other because the peer's port is the relayed
+// port of a live allocation. This is the rule that makes the probe work on a
+// deployed relay, over every transport.
+func TestProbePassesWithoutAllowlistingOwnAddress(t *testing.T) {
+	r := startRelay(t, false, "localhost")
+	user, pass := r.mint(t, time.Now().Add(10*time.Minute))
+	_, tlsPort, _ := net.SplitHostPort(r.tls)
+	out, err := cli(t, r.pool, user, pass, "--realm", testRealm,
+		"--server", "turn:"+r.udp+"?transport=udp",
+		"--server", "turn:"+r.tcp+"?transport=tcp",
+		"--server", "turns:localhost:"+tlsPort+"?transport=tcp")
+	if err != nil || strings.Count(out, "PASS ") != 3 {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
 // fakeTURN is a UDP "relay" that answers like one until a stage where it
 // misbehaves on purpose: it never relays (mode "drop"), or relays only what the
 // first allocation sends (mode "oneway"), or does not answer at all ("mute").
@@ -255,6 +272,11 @@ func (f *fakeTURN) handle(m *stun.Message, from net.Addr) {
 		r := ok()
 		r.AddAddr(stun.AttrXORRelayedAddress, rel)
 		f.reply(from, r)
+	case m.Class == stun.ClassRequest && m.Method == stun.MethodCreatePermission && f.mode == "forbid":
+		r := stun.New(stun.ClassError, m.Method)
+		r.TxID = m.TxID
+		r.AddError(403, "Forbidden")
+		f.reply(from, r)
 	case m.Class == stun.ClassRequest:
 		f.reply(from, ok())
 	case m.Class == stun.ClassIndication && m.Method == stun.MethodSend:
@@ -275,7 +297,6 @@ func (f *fakeTURN) handle(m *stun.Message, from net.Addr) {
 
 func TestProbeFailuresNameTheirStage(t *testing.T) {
 	good := startRelay(t, true)
-	locked := startRelay(t, false) // refuses to relay to its own address
 	user, pass := good.mint(t, time.Now().Add(10*time.Minute))
 	expiredUser, expiredPass := good.mint(t, time.Now().Add(-time.Minute))
 
@@ -286,8 +307,6 @@ func TestProbeFailuresNameTheirStage(t *testing.T) {
 	closedAddr := closed.Addr().String()
 	closed.Close()
 	_, tlsPort, _ := net.SplitHostPort(good.tls)
-
-	lUser, lPass := locked.mint(t, time.Now().Add(10*time.Minute))
 
 	cases := []struct {
 		name     string
@@ -307,7 +326,7 @@ func TestProbeFailuresNameTheirStage(t *testing.T) {
 		{"allocate: unknown key tag", "turn:" + good.tcp + "?transport=tcp", "9999999999:ffff.probe", pass, testRealm, nil, stageAllocate, "401"},
 		{"allocate: expired credentials", "turn:" + good.udp + "?transport=udp", expiredUser, expiredPass, testRealm, nil, stageAllocate, "401"},
 		{"allocate: wrong realm", "turn:" + good.udp + "?transport=udp", user, pass, "other.realm", nil, stageAllocate, "realm"},
-		{"permission: the server refuses its own address", "turn:" + locked.udp + "?transport=udp", lUser, lPass, testRealm, nil, stagePermission, "403"},
+		{"permission: the server answers 403", "turn:" + startFake(t, "forbid") + "?transport=udp", user, pass, testRealm, nil, stagePermission, "403"},
 		{"relay A->B: allocations that relay nothing", "turn:" + startFake(t, "drop") + "?transport=udp", user, pass, testRealm, nil, stageRelayAB, "did not come out"},
 		{"relay B->A: relays one way only", "turn:" + startFake(t, "oneway") + "?transport=udp", user, pass, testRealm, nil, stageRelayBA, "did not come out"},
 	}

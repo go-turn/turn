@@ -368,6 +368,7 @@ func (s *Server) handleAllocate(tr transport, from netip.AddrPort, m *stun.Messa
 		return
 	}
 	s.allocs[key] = a // perUser was already counted
+	s.byPort[local.Port()] = a
 	s.wg.Add(1)
 	s.mu.Unlock()
 	s.st.allocated.Add(1)
@@ -397,8 +398,20 @@ func (s *Server) handleRefresh(tr transport, from netip.AddrPort, m *stun.Messag
 }
 
 // peerChecks validates one XOR-PEER-ADDRESS: policy 403, family 443.
+//
+// An address of this server is a peer only at the relayed port of a live
+// allocation (two clients relaying to each other): every other port of it, SSH,
+// 443 or the TURN listener itself, stays 403. An address the operator allowlisted
+// is the operator's decision, as before.
 func (s *Server) peerCheck(p netip.AddrPort) int {
-	if p.Port() == 0 || !s.pol.permitted(p.Addr()) {
+	if p.Port() == 0 {
+		return stun.CodeForbidden
+	}
+	if s.pol.ownRestricted(p.Addr()) {
+		if s.liveRelayPort(p.Port()) == nil {
+			return stun.CodeForbidden
+		}
+	} else if !s.pol.permitted(p.Addr()) {
 		return stun.CodeForbidden
 	}
 	if norm(p.Addr()).Is4() != s.cfg.RelayIP.Is4() {
