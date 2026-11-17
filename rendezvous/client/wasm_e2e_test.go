@@ -32,7 +32,12 @@ func TestWasmEndToEnd(t *testing.T) {
 		t.Fatalf("building the wasm test: %v\n%s", err, out)
 	}
 	run := exec.Command(node, filepath.Join(goroot, "lib", "wasm", "wasm_exec_node.js"), bin, "-test.v", "-test.run", "^TestWasmRoundTrip$")
-	run.Env = append(os.Environ(), "TURND_URL="+base)
+	// A small environment: wasm_exec refuses a total of more than 8 KiB of command
+	// line and environment, which a Windows runner's environment exceeds.
+	run.Env = []string{"TURND_URL=" + base}
+	if sr := os.Getenv("SystemRoot"); sr != "" {
+		run.Env = append(run.Env, "SystemRoot="+sr)
+	}
 	done := make(chan struct{})
 	var out []byte
 	go func() { out, err = run.CombinedOutput(); close(done) }()
