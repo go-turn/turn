@@ -212,10 +212,20 @@ func (c *client) do(m *stun.Message) *stun.Message {
 	c.send(b)
 	var skipped [][]byte
 	defer func() { c.queue = append(skipped, c.queue...) }()
-	for {
-		f := c.recv(3 * time.Second)
+	// UDP may lose a datagram (a CI runner under load did); the server
+	// answers a retransmission of the same transaction idempotently.
+	wait := 700 * time.Millisecond
+	if c.stream {
+		wait = 3 * time.Second
+	}
+	for tries := 0; ; {
+		f := c.recv(wait)
 		if f == nil {
-			c.t.Fatalf("no response to %v", m.Method)
+			if tries++; tries >= 5 || c.stream {
+				c.t.Fatalf("no response to %v", m.Method)
+			}
+			c.send(b)
+			continue
 		}
 		if stun.IsMessage(f) {
 			r, err := stun.Decode(f)

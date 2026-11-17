@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -332,11 +333,40 @@ func TestQuotas(t *testing.T) {
 	}
 }
 
+// freeWindow returns the first port of n consecutive free UDP ports on
+// 127.0.0.1 (all bound, then released, so each is known to be usable).
+func freeWindow(t *testing.T, n int) int {
+	t.Helper()
+	for attempt := 0; attempt < 50; attempt++ {
+		first, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := first.LocalAddr().(*net.UDPAddr).Port
+		held := []net.PacketConn{first}
+		ok := true
+		for i := 1; i < n; i++ {
+			pc, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", base+i))
+			if err != nil {
+				ok = false
+				break
+			}
+			held = append(held, pc)
+		}
+		for _, pc := range held {
+			pc.Close()
+		}
+		if ok {
+			return base
+		}
+	}
+	t.Fatal("no free port window")
+	return 0
+}
+
 func TestRelayPortRange(t *testing.T) {
 	// Pick a free window of 3 ports.
-	pc, _ := net.ListenPacket("udp", "127.0.0.1:0")
-	base := pc.LocalAddr().(*net.UDPAddr).Port
-	pc.Close()
+	base := freeWindow(t, 3)
 	lo, hi := uint16(base), uint16(base+2)
 	e := start(t, false, func(c *Config) { c.RelayPortMin, c.RelayPortMax = lo, hi })
 	var seen []uint16
