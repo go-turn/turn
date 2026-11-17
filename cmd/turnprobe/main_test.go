@@ -8,6 +8,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
+	"io/fs"
 	"math/big"
 	"net"
 	"net/netip"
@@ -373,6 +375,9 @@ func TestParseServer(t *testing.T) {
 	}
 }
 
+// notExist stands for "the error wraps fs.ErrNotExist": the wording is the OS's.
+const notExist = "<fs.ErrNotExist>"
+
 func TestUsageRefusals(t *testing.T) {
 	dir := t.TempDir()
 	mk := func(name, content string, mode os.FileMode) string {
@@ -399,7 +404,7 @@ func TestUsageRefusals(t *testing.T) {
 		{"no realm", []string{"--server", srv, "--username", "u", "--password-file", good}, "--realm"},
 		{"bad server", []string{"--server", "nonsense", "--username", "u", "--password-file", good, "--realm", "r"}, "--server"},
 		{"turns over udp", []string{"--server", "turns:h:443?transport=udp", "--username", "u", "--password-file", good, "--realm", "r"}, "DTLS"},
-		{"password file missing", []string{"--server", srv, "--username", "u", "--password-file", filepath.Join(dir, "nope"), "--realm", "r"}, "no such file"},
+		{"password file missing", []string{"--server", srv, "--username", "u", "--password-file", filepath.Join(dir, "nope"), "--realm", "r"}, notExist},
 		{"password file empty", []string{"--server", srv, "--username", "u", "--password-file", empty, "--realm", "r"}, "empty"},
 		{"password file is a directory", []string{"--server", srv, "--username", "u", "--password-file", dir, "--realm", "r"}, "not a regular file"},
 		{"zero timeout", []string{"--server", srv, "--username", "u", "--password-file", good, "--realm", "r", "--timeout", "0s"}, "--timeout"},
@@ -419,7 +424,11 @@ func TestUsageRefusals(t *testing.T) {
 		cmd.SetErr(&out)
 		cmd.SetArgs(c.args)
 		err := cmd.Execute()
-		if err == nil || !strings.Contains(err.Error(), c.want) {
+		if c.want == notExist {
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("%s: err %v is not a missing-file error", c.name, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err %v, want %q", c.name, err, c.want)
 		}
 		if strings.Contains(out.String(), "PASS") {

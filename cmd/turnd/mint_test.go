@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,6 +36,9 @@ func runMintCmd(args ...string) (stdout, stderr string, err error) {
 	err = cmd.Execute()
 	return out.String(), errb.String(), err
 }
+
+// notExist stands for "the error wraps fs.ErrNotExist": the wording is the OS's.
+const notExist = "<fs.ErrNotExist>"
 
 const (
 	secretA = "0123456789abcdef-secret-A"
@@ -144,8 +149,7 @@ func TestMintCredentialsRefusals(t *testing.T) {
 		{"ttl a day", []string{"--turn-secret-file", good, "--subject", "s", "--ttl", "24h", "--password-out", out("o10")}, "--ttl"},
 		{"secret too short", []string{"--turn-secret-file", short, "--subject", "s", "--password-out", out("o11")}, "shorter than 16"},
 		{"secret empty", []string{"--turn-secret-file", empty, "--subject", "s", "--password-out", out("o12")}, "empty"},
-		{"secret missing", []string{"--turn-secret-file", missing, "--subject", "s", "--password-out", out("o13")}, "no such file"},
-		{"secret world-readable", []string{"--turn-secret-file", world, "--subject", "s", "--password-out", out("o14")}, "readable by everybody"},
+		{"secret missing", []string{"--turn-secret-file", missing, "--subject", "s", "--password-out", out("o13")}, notExist},
 		{"a second secret is bad", []string{"--turn-secret-file", good, "--turn-secret-file", short, "--subject", "s", "--password-out", out("o15")}, "shorter than 16"},
 		{"duplicate secrets", []string{"--turn-secret-file", good, "--turn-secret-file", good, "--subject", "s", "--password-out", out("o16")}, "same"},
 		{"password-out exists", []string{"--turn-secret-file", good, "--subject", "s", "--password-out", existing}, "exist"},
@@ -157,7 +161,12 @@ func TestMintCredentialsRefusals(t *testing.T) {
 			name string
 			args []string
 			want string
-		}{"password-out is a dangling symlink", []string{"--turn-secret-file", good, "--subject", "s", "--password-out", link}, "exist"})
+		}{"password-out is a dangling symlink", []string{"--turn-secret-file", good, "--subject", "s", "--password-out", link}, "exist"},
+			struct {
+				name string
+				args []string
+				want string
+			}{"secret world-readable", []string{"--turn-secret-file", world, "--subject", "s", "--password-out", out("o14")}, "readable by everybody"})
 	}
 	for _, c := range cases {
 		stdout, _, err := runMintCmd(c.args...)
@@ -165,7 +174,11 @@ func TestMintCredentialsRefusals(t *testing.T) {
 			t.Errorf("%s: accepted", c.name)
 			continue
 		}
-		if !strings.Contains(err.Error(), c.want) {
+		if c.want == notExist {
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("%s: error %q is not a missing-file error", c.name, err)
+			}
+		} else if !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: error %q does not mention %q", c.name, err, c.want)
 		}
 		if stdout != "" {
