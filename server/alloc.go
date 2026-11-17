@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -149,11 +150,20 @@ func (a *allocation) readLoop() {
 	buf := make([]byte, 4+size+4)
 	var out []byte
 	stream := a.tr.isStream()
+	failures := 0
 	for {
 		n, src, err := a.relay.ReadFromUDPAddrPort(buf[4 : 4+size])
 		if err != nil {
-			return // closed by expiry, Refresh 0, or Close
+			// Closed by expiry, Refresh 0, or Close. Anything else (Windows
+			// reports an ICMP port-unreachable as a read error) is skipped,
+			// bounded so a persistent error cannot spin.
+			if errors.Is(err, net.ErrClosed) || failures >= 100 {
+				return
+			}
+			failures++
+			continue
 		}
+		failures = 0
 		src = ap(src)
 		if n == size { // possibly truncated: refuse rather than relay a prefix
 			a.s.st.dropped.Add(1)

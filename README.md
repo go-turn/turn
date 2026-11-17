@@ -64,6 +64,36 @@ RFC 5769 vectors (decode, verify, byte-identical re-encode); `FuzzDecode` and
 `FuzzChannelData` have a committed seed corpus under `stun/testdata/fuzz`.
 SASLprep (OpaqueString) is the caller's job.
 
+## Package `server`
+
+The RFC 8656 TURN server: UDP relayed transport, reached over UDP, TCP or TLS
+(the caller passes the sockets), plus the STUN Binding answer. Long-term
+credentials (MD5, and SHA-256 when the client asks) with NONCE expiry (438);
+permissions last 300 s, channels 600 s.
+
+```go
+srv, err := server.New(server.Config{
+	Realm:   "turn.example.org",
+	Auth:    func(username string) (password string, ok bool) { /* wrap creds.Verify */ },
+	RelayIP: netip.MustParseAddr("203.0.113.5"),
+})
+go srv.ServePacketConn(udpConn)         // UDP clients
+go srv.ServeListener(tcpListener)       // TCP clients
+go srv.ServeTLS(tcpListener443, tlsCfg) // turns:
+```
+
+By default the server never relays to or from loopback, `0.0.0.0/8`, RFC 1918,
+`100.64/10`, link-local (169.254.169.254 included), multicast, ULA, the
+NAT64/6to4/Teredo forms, IPv4-mapped forms of those, or its own addresses: it
+answers 403. `Config.AllowPeers` re-enables ranges (tests use `127.0.0.0/8`).
+Bounds, all in `Config`: allocations per user and in total, lifetime cap,
+per-allocation byte rate, relay port range, permissions and channels per
+allocation, concurrent connections, idle and handshake timeouts, datagram size.
+`interop/` is the judge: github.com/pion/turn/v4 (test-only) allocates, permits,
+binds a channel and round-trips data through the server over UDP and TCP.
+`go test -bench . ./server` prints allocations/s and relayed packets/s;
+the comparison with coturn on one core is still to do.
+
 ## Licence
 
 BSD-3-Clause.

@@ -498,5 +498,6 @@ func (s *Server) handleChannelBind(tr transport, from netip.AddrPort, m *stun.Me
 	cur.expires = now.Add(channelLifetime)
 	a.perms[peer.Addr()] = now.Add(permissionLifetime)
 	a.mu.Unlock()
+	s.st.binds.Add(1)
 	s.ok(tr, from, m, c, func(*stun.Message) {})
 }

@@ -38,7 +38,7 @@ type Server struct {
 }
 
 type counters struct {
-	allocated, toPeer, toClient, dropped atomic.Uint64
+	allocated, toPeer, toClient, dropped, binds atomic.Uint64
 }
 
 // Stats is a snapshot of the server counters.
@@ -48,6 +48,7 @@ type Stats struct {
 	PacketsToPeer   uint64 // client to peer datagrams relayed
 	PacketsToClient uint64 // peer to client datagrams relayed
 	Dropped         uint64 // datagrams dropped (no permission, rate cap, bad frame)
+	ChannelBinds    uint64 // successful ChannelBind requests
 }
 
 // New validates cfg and returns a stopped-until-served Server.
@@ -76,7 +77,7 @@ func (s *Server) Stats() Stats {
 	s.mu.RLock()
 	n := len(s.allocs)
 	s.mu.RUnlock()
-	return Stats{n, s.st.allocated.Load(), s.st.toPeer.Load(), s.st.toClient.Load(), s.st.dropped.Load()}
+	return Stats{n, s.st.allocated.Load(), s.st.toPeer.Load(), s.st.toClient.Load(), s.st.dropped.Load(), s.st.binds.Load()}
 }
 
 // Close stops every listener, connection and allocation and waits for the
@@ -201,6 +202,7 @@ func (s *Server) ServePacketConn(pc net.PacketConn) error {
 	tr.udp, _ = pc.(*net.UDPConn)
 	s.pol.addOwn(tr.addr.Addr())
 	buf := make([]byte, 65535)
+	failures := 0
 	for {
 		var from netip.AddrPort
 		var n int
@@ -219,8 +221,14 @@ func (s *Server) ServePacketConn(pc net.PacketConn) error {
 			if s.isDone() || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return err
+			// Windows reports ICMP port-unreachable as a read error; skip
+			// it, but not forever.
+			if failures++; failures >= 100 {
+				return err
+			}
+			continue
 		}
+		failures = 0
 		s.handlePacket(tr, from, buf[:n])
 	}
 }
