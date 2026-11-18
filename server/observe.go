@@ -55,8 +55,18 @@ func (s *Server) observe(tr transport, req *stun.Message, code int, policy strin
 	if s.cfg.Observer == nil || req.Class != stun.ClassRequest {
 		return
 	}
-	s.cfg.Observer.Request(RequestInfo{Method: methodName(req.Method), Transport: tr.name(),
-		Code: code, Policy: policy, Received: time.Unix(0, req.Received), End: time.Now()})
+	info := RequestInfo{Method: methodName(req.Method), Transport: tr.name(), Code: code, Policy: policy, End: time.Now()}
+	if t, ok := tr.(*timedTransport); ok {
+		info.Received = t.received
+	}
+	s.cfg.Observer.Request(info)
+}
+
+// timedTransport is a transport that remembers when the request being served
+// was read. It exists only while an Observer is set.
+type timedTransport struct {
+	transport
+	received time.Time
 }
 
 var (

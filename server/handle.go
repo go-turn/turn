@@ -191,7 +191,10 @@ func (s *Server) handleSTUN(tr transport, from netip.AddrPort, m *stun.Message) 
 		s.handleSend(tr, from, m)
 	case m.Class == stun.ClassRequest:
 		if s.cfg.Observer != nil {
-			m.Received = time.Now().UnixNano()
+			// The request's start rides on the transport for the length of the
+			// request (observe reads it), so the Message itself stays as small
+			// as it was: a larger one moved the Send path to the next size class.
+			tr = &timedTransport{transport: tr, received: time.Now()}
 		}
 		switch m.Method {
 		case stun.MethodAllocate, stun.MethodRefresh, stun.MethodCreatePermission, stun.MethodChannelBind:
