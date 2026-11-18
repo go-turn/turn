@@ -75,6 +75,7 @@ func RootCmd() *cobra.Command {
 	f.StringVar(&cfg.Relay.TURNTCPListen, "turn-tcp-listen", "", "serve TURN over TCP here, e.g. :3478")
 	f.StringVar(&cfg.Relay.TURNSListen, "turns-listen", "", "serve TURN over TLS here, e.g. :443 (uses --tls-cert-file and --tls-key-file)")
 	f.StringArrayVar(&cfg.Relay.ProxyFrom, "proxy-protocol-from", nil, "accept a PROXY protocol v2 (or v1) header on TCP and TLS connections from this prefix, e.g. 127.0.0.1/32 for Caddy on the same host (repeat; off when empty; never UDP)")
+	f.DurationVar(&cfg.Relay.MaxAllocationAge, "max-allocation-age", 12*time.Hour, "longest an allocation may live: a call outlasts the 1 h credential that opened it (Refresh, permissions and channels keep working with its expired username), but Refresh is refused past this age")
 	f.UintVar(&cfg.Relay.PortMin, "relay-port-min", 0, "lowest relayed UDP port (0 with --relay-port-max 0: any)")
 	f.UintVar(&cfg.Relay.PortMax, "relay-port-max", 0, "highest relayed UDP port")
 	f.DurationVar(&cfg.SessionTTL, "session-ttl", time.Hour, "lifetime of a session token")
@@ -105,7 +106,7 @@ func serve(ctx context.Context, cmd *cobra.Command, cfg config, ready func(strin
 		return err
 	}
 	defer a.Close()
-	stopRelay, err := startRelay(ctx, relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil),
+	stopRelay, err := startRelay(ctx, relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil), AuthExisting: a.ring.AuthExisting(),
 		Options: cfg.Relay, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile})
 	if err != nil {
 		return fmt.Errorf("relay: %w", err)
