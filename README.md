@@ -70,6 +70,7 @@ with no `Origin` header is a native client. Only browser navigations stay HTTP:
 | `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the current host's person (see *A room outlives its host*) |
 | `CloseRoom{room}` | host token | ends the room |
 | `HandOver{room,to}` | host token | gives the host role to an admitted, connected guest; the old host's token is dead |
+| `AppointCoHost{room,peer}` / `RevokeCoHost{room,peer}` | host token only | an **admitted** peer may admit, deny and close beside the host (see *Co-hosts*); revoking takes the powers at once |
 | `Reclaim{room}` | a **session** token whose subject was the host's | `{peer, host, host_peer, token, expires}`: the host role back (new token), or, after a handover, an admitted guest with the SAME peer ID |
 | `Room(stream Envelope) returns (stream Envelope)` | peer token + `x-turn-room` metadata | the room's one stream: events down, messages up; ending it is leaving |
 
@@ -128,7 +129,8 @@ behaviour, the host leaving closes the room).
   rendezvous cannot know; the collab layer's rejoin with a version vector covers
   it).
 - *Past the grace*, or when the host calls `HandOver{room,to}` first, the
-  **earliest-admitted guest still connected** becomes the host (no version-vector
+  earliest-appointed **co-host** still connected, else the
+  **earliest-admitted guest still connected**, becomes the host (no version-vector
   election: the collab layer reconciles in both directions on rejoin). A
   pending, denied or disconnected guest is never promoted; if nobody qualifies the
   room closes (`promote` / `failed_precondition`). A guest cannot promote itself
@@ -157,8 +159,26 @@ behaviour, the host leaving closes the room).
   is ahead of the new host pushes what it holds). In peer-to-peer mode nothing may
   purge history, or a purged replica could not serve a rejoin.
 
+**Co-hosts.** The host (and only the host) appoints an admitted guest with
+`AppointCoHost{room,peer}` and takes it back with `RevokeCoHost`; a pending,
+denied or unknown peer cannot be appointed (`FAILED_PRECONDITION`, `NOT_FOUND`),
+and a guest or a co-host that tries to appoint, revoke or `HandOver` is refused
+(`PERMISSION_DENIED`). A co-host may `Admit`, `Deny` (not the host or another
+co-host: only the host removes a co-host) and `CloseRoom`, and gets
+`RoomCredentials` charged to its own subject when it presented a session, else to
+the host's, never past the room's TTL. There is still exactly **one** active host,
+the peer that runs the document's centre. Everyone receives `sys.cohost-added` /
+`sys.cohost-removed` with body `{"peer":"<id>"}`; revoking removes the powers with
+the call itself. The knocks, joins and leaves are sent to the host **and every
+co-host**, so the **pending-guest expiry** (`MaxPending`, a 2-minute `PendingTTL`)
+now has several people to answer it, and a waiting guest's `sys.leave "expired"`
+reaches them all. On a host loss past the grace the **earliest-appointed co-host
+still connected is promoted first**; only if none remains, the earliest-admitted
+guest. A promoted co-host is the host (no longer listed as a co-host). Client:
+`AppointCoHost`, `RevokeCoHost`, `CloseRoom`, `IsCoHost`, `Event.CoHost`.
+
 New observer actions (and `turnd.rendezvous.operations` actions): `hand_over`,
-`reclaim`, and the two with no RPC, `host_lost` (the grace starts) and `promote`
+`appoint_cohost`, `revoke_cohost`, `reclaim`, and the two with no RPC, `host_lost` (the grace starts) and `promote`
 (the grace ended); never a token, room, peer or name.
 
 The credential scheme is

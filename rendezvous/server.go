@@ -144,7 +144,7 @@ type Config struct {
 type Observer interface {
 	// Event reports one RPC. action is one of "credentials_host",
 	// "credentials_room", "create_room", "knock", "admit", "deny",
-	// "close_room", "hand_over", "reclaim", "renew_session" or "stream", plus two
+	// "close_room", "hand_over", "appoint_cohost", "revoke_cohost", "reclaim", "renew_session" or "stream", plus two
 	// that no RPC carries: "host_lost" (a host's stream ended, the grace period
 	// starts) and "promote" (the grace period ended: "ok" when a guest took the
 	// role, "failed_precondition" when none could and the room closed; an
@@ -261,6 +261,7 @@ type room struct {
 	timer    *time.Timer      // fires the end of the grace period
 	former   map[string]*peer // hosts that were handed over, by peer ID: they may come back as guests
 	ranks    int              // admission order: the lower, the earlier
+	cranks   int              // co-host appointment order
 }
 
 type peer struct {
@@ -269,7 +270,9 @@ type peer struct {
 	name      string
 	subject   string // who this peer is, when it presented a session: "" otherwise
 	rank      int    // order of (re)admission; the host's is 0
-	pending   bool   // knocked, not yet admitted
+	cohost    bool   // appointed by the host: may admit, deny, close; cohostRank is the order of appointment
+	cohostRnk int
+	pending   bool // knocked, not yet admitted
 	since     time.Time
 	queue     []*turnv1.Envelope
 	notify    chan struct{}
@@ -583,7 +586,7 @@ func (s *Server) expirePendingLocked(rm *room, now time.Time) {
 	for _, p := range rm.peers {
 		if p.pending && !p.since.Add(s.cfg.Limits.PendingTTL).After(now) {
 			rm.removeLocked(p, sys(HostID, p.id, "sys.denied", "expired"))
-			rm.push(rm.host, sys(p.id, HostID, "sys.leave", "expired"), 0, true)
+			rm.tellHostsLocked(p, "sys.leave", "expired")
 		}
 	}
 }
@@ -627,7 +630,7 @@ func (s *Server) JoinRoom(ctx context.Context, req *turnv1.JoinRoomRequest) (_ *
 	g := newPeer("g" + strconv.Itoa(rm.nextID))
 	g.pending, g.name, g.since, g.subject = true, name, s.now(), subject
 	rm.peers[g.id] = g
-	rm.push(rm.host, sys(g.id, rm.host.id, "sys.knock", name), 0, true)
+	rm.tellHostsLocked(g, "sys.knock", name)
 	return &turnv1.JoinRoomResponse{Room: rm.id, Peer: g.id, Host: rm.host.id, Token: g.token, Expires: rm.expires.Unix(), Pending: true}, nil
 }
 
@@ -649,23 +652,37 @@ func (s *Server) peerLocked(roomID, tok string) (*room, *peer, error) {
 	return rm, found, nil
 }
 
-// hostLocked authenticates the host.
+// hostLocked authenticates THE host: what only it may do (hand over, appoint
+// and revoke co-hosts).
 func (s *Server) hostLocked(ctx context.Context, roomID string) (*room, error) {
 	rm, p, err := s.peerLocked(roomID, bearer(ctx))
 	if err != nil {
 		return nil, err
 	}
-	if !rm.hasHostPowers(p) {
+	if p != rm.host {
 		return nil, status.Error(codes.PermissionDenied, "only the host can do this")
 	}
 	return rm, nil
+}
+
+// powerLocked authenticates the host or a co-host: what they share (admit,
+// deny, close the room). The peer is returned too.
+func (s *Server) powerLocked(ctx context.Context, roomID string) (*room, *peer, error) {
+	rm, p, err := s.peerLocked(roomID, bearer(ctx))
+	if err != nil {
+		return nil, nil, err
+	}
+	if !rm.hasHostPowers(p) {
+		return nil, nil, status.Error(codes.PermissionDenied, "only the host can do this")
+	}
+	return rm, p, nil
 }
 
 func (s *Server) decision(ctx context.Context, req *turnv1.DecideRequest) (*room, *peer, error) {
 	if req.GetPeer() == "" {
 		return nil, nil, status.Error(codes.InvalidArgument, "bad peer")
 	}
-	rm, err := s.hostLocked(ctx, req.GetRoom())
+	rm, by, err := s.powerLocked(ctx, req.GetRoom())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -676,7 +693,21 @@ func (s *Server) decision(ctx context.Context, req *turnv1.DecideRequest) (*room
 	if g == nil {
 		return nil, nil, status.Error(codes.NotFound, "no such peer")
 	}
+	// nobody decides about a peer with host powers but the host itself
+	if g.cohost && by != rm.host {
+		return nil, nil, status.Error(codes.PermissionDenied, "only the host decides about a co-host")
+	}
 	return rm, g, nil
+}
+
+// tellHostsLocked sends one event to the host and every co-host, each addressed
+// to itself: whoever may decide must hear the knocks, joins and leaves.
+func (rm *room) tellHostsLocked(from *peer, kind, body string) {
+	for _, p := range rm.peers {
+		if rm.hasHostPowers(p) && p != from {
+			rm.push(p, sys(from.id, p.id, kind, body), 0, true)
+		}
+	}
 }
 
 // Admit implements turn.v1.Turnd.
@@ -698,7 +729,7 @@ func (s *Server) Admit(ctx context.Context, req *turnv1.DecideRequest) (_ *turnv
 	rm.ranks++
 	g.pending, g.rank = false, rm.ranks
 	rm.push(g, sys(HostID, g.id, "sys.admitted", ""), 0, true)
-	rm.push(rm.host, sys(g.id, rm.host.id, "sys.join", g.name), 0, true)
+	rm.tellHostsLocked(g, "sys.join", g.name)
 	return &turnv1.Ack{}, nil
 }
 
@@ -713,7 +744,7 @@ func (s *Server) Deny(ctx context.Context, req *turnv1.DecideRequest) (_ *turnv1
 		return nil, err
 	}
 	if !g.pending {
-		rm.push(rm.host, sys(g.id, rm.host.id, "sys.leave", "removed"), 0, true)
+		rm.tellHostsLocked(g, "sys.leave", "removed")
 	}
 	rm.removeLocked(g, sys(HostID, g.id, "sys.denied", ""))
 	return &turnv1.Ack{}, nil
@@ -738,9 +769,13 @@ func (s *Server) RoomCredentials(ctx context.Context, req *turnv1.RoomRef) (_ *t
 	}
 	rm.creds++
 	// Charged to the host of the moment when it said who it is (a promoted
-	// guest that presented a session), else to who opened the room. The expiry
-	// is the room's: a handover never extends it.
+	// guest that presented a session), else to who opened the room; a co-host
+	// that said who it is pays for itself. The expiry is the room's: neither a
+	// handover nor a co-host extends it.
 	exp, sub := rm.expires, rm.host.subject
+	if p.cohost && p.subject != "" {
+		sub = p.subject
+	}
 	if sub == "" {
 		sub = rm.subject
 	}
@@ -756,7 +791,7 @@ func (s *Server) CloseRoom(ctx context.Context, req *turnv1.RoomRef) (_ *turnv1.
 	defer func() { s.seen(ctx, "close_room", err) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rm, err := s.hostLocked(ctx, req.GetRoom())
+	rm, _, err := s.powerLocked(ctx, req.GetRoom())
 	if err != nil {
 		return nil, err
 	}
@@ -862,16 +897,15 @@ func (s *Server) leave(rm *room, p *peer) {
 		return
 	}
 	rm.removeLocked(p, nil)
-	rm.push(rm.host, sys(p.id, rm.host.id, "sys.leave", ""), 0, true)
+	rm.tellHostsLocked(p, "sys.leave", "")
 }
 
-// hasHostPowers is the one predicate for "may admit, deny, close, hand over".
-// Today it is the single active host (rm.host, a peer, never a renamed ID: the
-// host is data on the room, not the constant "host"). Co-hosts, if the owner
-// decides on them, widen this one test (a set of peers beside rm.host) without
-// touching the wire or the stored peers; rm.host stays the ONE peer that runs
-// the document's centre.
-func (rm *room) hasHostPowers(p *peer) bool { return p == rm.host }
+// hasHostPowers is the one predicate for "may admit, deny, close the room": the
+// active host (rm.host, a peer, never a renamed ID: the host is data on the
+// room, not the constant "host") or a co-host the host appointed. There is
+// exactly ONE active host, the peer that runs the document's centre; handing
+// over, appointing and revoking stay the host's alone.
+func (rm *room) hasHostPowers(p *peer) bool { return p == rm.host || p.cohost }
 
 // hostBackLocked ends the grace period: the host has its role.
 func (rm *room) hostBackLocked() {
@@ -894,7 +928,9 @@ func (s *Server) settleLocked(rm *room, now time.Time) {
 		if p.pending || p == rm.host || !p.streaming {
 			continue
 		}
-		if best == nil || p.rank < best.rank {
+		// the earliest-APPOINTED co-host first; no co-host connected: the
+		// earliest-ADMITTED guest
+		if best == nil || better(p, best) {
 			best = p
 		}
 	}
@@ -908,9 +944,92 @@ func (s *Server) settleLocked(rm *room, now time.Time) {
 	s.noteLocked("promote", "ok")
 }
 
+// better reports whether a is to be promoted before b.
+func better(a, b *peer) bool {
+	if a.cohost != b.cohost {
+		return a.cohost
+	}
+	if a.cohost {
+		return a.cohostRnk < b.cohostRnk
+	}
+	return a.rank < b.rank
+}
+
 type hostChange struct {
 	From string `json:"from"`
 	To   string `json:"to"`
+}
+
+type cohostEvent struct {
+	Peer string `json:"peer"`
+}
+
+// AppointCoHost implements turn.v1.Turnd.
+func (s *Server) AppointCoHost(ctx context.Context, req *turnv1.CoHostRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "appoint_cohost", err) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm, err := s.hostLocked(ctx, req.GetRoom())
+	if err != nil {
+		return nil, err
+	}
+	g := rm.peers[req.GetPeer()]
+	switch {
+	case req.GetPeer() == "" || g == rm.host:
+		return nil, status.Error(codes.InvalidArgument, "bad peer")
+	case g == nil:
+		return nil, status.Error(codes.NotFound, "no such peer")
+	case g.pending:
+		return nil, status.Error(codes.FailedPrecondition, "not admitted yet")
+	case g.cohost:
+		return nil, status.Error(codes.FailedPrecondition, "already a co-host")
+	}
+	rm.cranks++
+	g.cohost, g.cohostRnk = true, rm.cranks
+	rm.tellAllLocked("sys.cohost-added", g.id)
+	// a new co-host answers the knocks too: it hears the waiting guests again
+	var waiting []*peer
+	for _, p := range rm.peers {
+		if p.pending {
+			waiting = append(waiting, p)
+		}
+	}
+	sort.Slice(waiting, func(i, j int) bool { return waiting[i].since.Before(waiting[j].since) })
+	for _, p := range waiting {
+		rm.push(g, sys(p.id, g.id, "sys.knock", p.name), 0, true)
+	}
+	return &turnv1.Ack{}, nil
+}
+
+// RevokeCoHost implements turn.v1.Turnd.
+func (s *Server) RevokeCoHost(ctx context.Context, req *turnv1.CoHostRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "revoke_cohost", err) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm, err := s.hostLocked(ctx, req.GetRoom())
+	if err != nil {
+		return nil, err
+	}
+	g := rm.peers[req.GetPeer()]
+	switch {
+	case req.GetPeer() == "" || g == rm.host:
+		return nil, status.Error(codes.InvalidArgument, "bad peer")
+	case g == nil:
+		return nil, status.Error(codes.NotFound, "no such peer")
+	case !g.cohost:
+		return nil, status.Error(codes.FailedPrecondition, "not a co-host")
+	}
+	g.cohost = false // the powers go with this call, not with the news
+	rm.tellAllLocked("sys.cohost-removed", g.id)
+	return &turnv1.Ack{}, nil
+}
+
+// tellAllLocked sends a co-host event, body {"peer":id}, to every peer.
+func (rm *room) tellAllLocked(kind, id string) {
+	body, _ := json.Marshal(cohostEvent{Peer: id})
+	for _, p := range rm.peers {
+		rm.push(p, sys(HostID, p.id, kind, string(body)), 0, true)
+	}
 }
 
 // handOverLocked makes to the host: the one place the role moves, under the
@@ -936,6 +1055,7 @@ func (s *Server) handOverLocked(rm *room, to *peer) {
 	rm.former[old.id] = old
 	rm.host = to
 	to.rank = 0
+	to.cohost = false // the host's powers contain a co-host's; sys.host-changed is the news
 	for _, p := range rm.peers {
 		rm.push(p, sys(HostID, p.id, "sys.host-changed", string(body)), 0, true)
 	}

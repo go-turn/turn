@@ -337,3 +337,43 @@ func TestEventHostChange(t *testing.T) {
 		}
 	}
 }
+
+func TestCoHostThroughTheClient(t *testing.T) {
+	base := server(t, nil)
+	host := mustCreate(t, base)
+	a := admitted(t, base, host, "ann")
+	b := admitted(t, base, host, "ben")
+	if err := a.AppointCoHost(ctx(t), b.Peer); err == nil {
+		t.Fatal("a guest appointed")
+	}
+	if err := host.AppointCoHost(ctx(t), a.Peer); err != nil {
+		t.Fatal(err)
+	}
+	if p, added, ok := until(t, a, "sys.cohost-added").CoHost(); !ok || !added || p != a.Peer {
+		t.Fatalf("%s %v %v", p, added, ok)
+	}
+	if !a.IsCoHost() || b.IsCoHost() || a.IsHost() {
+		t.Fatalf("ann %v ben %v", a.IsCoHost(), b.IsCoHost())
+	}
+	// the co-host answers a knock
+	c := admitted(t, base, a, "cat")
+	_ = c
+	if err := a.AppointCoHost(ctx(t), b.Peer); err == nil {
+		t.Fatal("a co-host appointed")
+	}
+	if err := host.RevokeCoHost(ctx(t), a.Peer); err != nil {
+		t.Fatal(err)
+	}
+	if _, added, ok := until(t, a, "sys.cohost-removed").CoHost(); !ok || added {
+		t.Fatal("not removed")
+	}
+	if a.IsCoHost() {
+		t.Fatal("still a co-host")
+	}
+	if _, _, ok := (client.Event{Kind: "sys.cohost-added", Body: []byte("x")}).CoHost(); ok {
+		t.Fatal("bad body")
+	}
+	if _, _, ok := (client.Event{Kind: "sys.join"}).CoHost(); ok {
+		t.Fatal("wrong kind")
+	}
+}

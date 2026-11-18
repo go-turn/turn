@@ -62,6 +62,18 @@ service Turnd {
   // back with Reclaim, as an ordinary guest. Every peer gets sys.host-changed.
   rpc HandOver(HandOverRequest) returns (Ack);
 
+  // AppointCoHost gives an ADMITTED guest the right to Admit, Deny, CloseRoom and
+  // get RoomCredentials charged to itself (when it presented a session) beside
+  // the host; RevokeCoHost takes it back at once. Host token only: a co-host
+  // cannot appoint or revoke, nor hand over. There is still exactly one active
+  // host. FAILED_PRECONDITION: pending, already (or not) a co-host; NOT_FOUND:
+  // no such peer (a denied one included); INVALID_ARGUMENT: the host itself.
+  // Everyone gets sys.cohost-added / sys.cohost-removed {"peer":"<id>"}. On a
+  // host loss past the grace period the earliest-appointed co-host still
+  // connected is promoted first, then the earliest-admitted guest.
+  rpc AppointCoHost(CoHostRequest) returns (Ack);
+  rpc RevokeCoHost(CoHostRequest) returns (Ack);
+
   // Reclaim is how a person who was the host comes back. Bearer: a SESSION token
   // (never a room token) whose subject is the host's. While the host role is
   // still theirs (the grace period, or a stale stream still open) they take it
@@ -129,6 +141,11 @@ message HandOverRequest {
   string to = 2; // the peer ID of an admitted, connected guest
 }
 
+message CoHostRequest {
+  string room = 1;
+  string peer = 2;
+}
+
 message ReclaimRequest {
   string room = 1;
 }
@@ -169,6 +186,8 @@ message IceServer {
 //	             told the pending guests (sys.knock) and the admitted ones (sys.join)
 //	             again, and gets the messages that were queued for the old host.
 //	             "host" as a message's to means the CURRENT host, whoever it is
+//	sys.cohost-added / sys.cohost-removed to everyone: body {"peer":"<peer>"}; the
+//	             knocks, joins and leaves go to the host and every co-host
 //	sys.error    to the sender of a message the OTHER peer could not take (gone,
 //	             queue full): body "<Code>: <reason>" with the gRPC code's name,
 //	             e.g. "NotFound: no such peer"; the stream stays open

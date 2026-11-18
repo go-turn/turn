@@ -551,6 +551,58 @@ func (x *HandOverRequest) GetTo() string {
 	return ""
 }
 
+type CoHostRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CoHostRequest) Reset() {
+	*x = CoHostRequest{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CoHostRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CoHostRequest) ProtoMessage() {}
+
+func (x *CoHostRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CoHostRequest.ProtoReflect.Descriptor instead.
+func (*CoHostRequest) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CoHostRequest) GetRoom() string {
+	if x != nil {
+		return x.Room
+	}
+	return ""
+}
+
+func (x *CoHostRequest) GetPeer() string {
+	if x != nil {
+		return x.Peer
+	}
+	return ""
+}
+
 type ReclaimRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
@@ -560,7 +612,7 @@ type ReclaimRequest struct {
 
 func (x *ReclaimRequest) Reset() {
 	*x = ReclaimRequest{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	mi := &file_turn_v1_turnd_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -572,7 +624,7 @@ func (x *ReclaimRequest) String() string {
 func (*ReclaimRequest) ProtoMessage() {}
 
 func (x *ReclaimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	mi := &file_turn_v1_turnd_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -585,7 +637,7 @@ func (x *ReclaimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReclaimRequest.ProtoReflect.Descriptor instead.
 func (*ReclaimRequest) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{10}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReclaimRequest) GetRoom() string {
@@ -609,7 +661,7 @@ type ReclaimResponse struct {
 
 func (x *ReclaimResponse) Reset() {
 	*x = ReclaimResponse{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[11]
+	mi := &file_turn_v1_turnd_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -621,7 +673,7 @@ func (x *ReclaimResponse) String() string {
 func (*ReclaimResponse) ProtoMessage() {}
 
 func (x *ReclaimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[11]
+	mi := &file_turn_v1_turnd_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -634,7 +686,7 @@ func (x *ReclaimResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReclaimResponse.ProtoReflect.Descriptor instead.
 func (*ReclaimResponse) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{11}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReclaimResponse) GetRoom() string {
@@ -687,7 +739,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[12]
+	mi := &file_turn_v1_turnd_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +751,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[12]
+	mi := &file_turn_v1_turnd_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +764,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{12}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{13}
 }
 
 // IceServers is shaped like an RTCConfiguration's iceServers list.
@@ -726,7 +778,7 @@ type IceServers struct {
 
 func (x *IceServers) Reset() {
 	*x = IceServers{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[13]
+	mi := &file_turn_v1_turnd_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -738,7 +790,7 @@ func (x *IceServers) String() string {
 func (*IceServers) ProtoMessage() {}
 
 func (x *IceServers) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[13]
+	mi := &file_turn_v1_turnd_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -751,7 +803,7 @@ func (x *IceServers) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceServers.ProtoReflect.Descriptor instead.
 func (*IceServers) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{13}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *IceServers) GetIceServers() []*IceServer {
@@ -779,7 +831,7 @@ type IceServer struct {
 
 func (x *IceServer) Reset() {
 	*x = IceServer{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[14]
+	mi := &file_turn_v1_turnd_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +843,7 @@ func (x *IceServer) String() string {
 func (*IceServer) ProtoMessage() {}
 
 func (x *IceServer) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[14]
+	mi := &file_turn_v1_turnd_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +856,7 @@ func (x *IceServer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceServer.ProtoReflect.Descriptor instead.
 func (*IceServer) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{14}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *IceServer) GetUrls() []string {
@@ -841,6 +893,8 @@ func (x *IceServer) GetCredential() string {
 //	             told the pending guests (sys.knock) and the admitted ones (sys.join)
 //	             again, and gets the messages that were queued for the old host.
 //	             "host" as a message's to means the CURRENT host, whoever it is
+//	sys.cohost-added / sys.cohost-removed to everyone: body {"peer":"<peer>"}; the
+//	             knocks, joins and leaves go to the host and every co-host
 //	sys.error    to the sender of a message the OTHER peer could not take (gone,
 //	             queue full): body "<Code>: <reason>" with the gRPC code's name,
 //	             e.g. "NotFound: no such peer"; the stream stays open
@@ -863,7 +917,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[15]
+	mi := &file_turn_v1_turnd_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -875,7 +929,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[15]
+	mi := &file_turn_v1_turnd_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -888,7 +942,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{15}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Envelope) GetSeq() uint64 {
@@ -959,7 +1013,10 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x04room\x18\x01 \x01(\tR\x04room\"5\n" +
 	"\x0fHandOverRequest\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x0e\n" +
-	"\x02to\x18\x02 \x01(\tR\x02to\"$\n" +
+	"\x02to\x18\x02 \x01(\tR\x02to\"7\n" +
+	"\rCoHostRequest\x12\x12\n" +
+	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
+	"\x04peer\x18\x02 \x01(\tR\x04peer\"$\n" +
 	"\x0eReclaimRequest\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\"\x9a\x01\n" +
 	"\x0fReclaimResponse\x12\x12\n" +
@@ -986,7 +1043,7 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
 	"\x02to\x18\x03 \x01(\tR\x02to\x12\x12\n" +
 	"\x04kind\x18\x04 \x01(\tR\x04kind\x12\x12\n" +
-	"\x04body\x18\x05 \x01(\fR\x04body2\x85\x05\n" +
+	"\x04body\x18\x05 \x01(\fR\x04body2\xf2\x05\n" +
 	"\x05Turnd\x12?\n" +
 	"\vCredentials\x12\x1b.turn.v1.CredentialsRequest\x1a\x13.turn.v1.IceServers\x12K\n" +
 	"\fRenewSession\x12\x1c.turn.v1.RenewSessionRequest\x1a\x1d.turn.v1.RenewSessionResponse\x12E\n" +
@@ -997,7 +1054,9 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x04Deny\x12\x16.turn.v1.DecideRequest\x1a\f.turn.v1.Ack\x128\n" +
 	"\x0fRoomCredentials\x12\x10.turn.v1.RoomRef\x1a\x13.turn.v1.IceServers\x12+\n" +
 	"\tCloseRoom\x12\x10.turn.v1.RoomRef\x1a\f.turn.v1.Ack\x122\n" +
-	"\bHandOver\x12\x18.turn.v1.HandOverRequest\x1a\f.turn.v1.Ack\x12<\n" +
+	"\bHandOver\x12\x18.turn.v1.HandOverRequest\x1a\f.turn.v1.Ack\x125\n" +
+	"\rAppointCoHost\x12\x16.turn.v1.CoHostRequest\x1a\f.turn.v1.Ack\x124\n" +
+	"\fRevokeCoHost\x12\x16.turn.v1.CoHostRequest\x1a\f.turn.v1.Ack\x12<\n" +
 	"\aReclaim\x12\x17.turn.v1.ReclaimRequest\x1a\x18.turn.v1.ReclaimResponse\x120\n" +
 	"\x04Room\x12\x11.turn.v1.Envelope\x1a\x11.turn.v1.Envelope(\x010\x01B.Z,github.com/go-turn/turn/proto/turn/v1;turnv1b\x06proto3"
 
@@ -1013,7 +1072,7 @@ func file_turn_v1_turnd_proto_rawDescGZIP() []byte {
 	return file_turn_v1_turnd_proto_rawDescData
 }
 
-var file_turn_v1_turnd_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_turn_v1_turnd_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_turn_v1_turnd_proto_goTypes = []any{
 	(*CredentialsRequest)(nil),   // 0: turn.v1.CredentialsRequest
 	(*RenewSessionRequest)(nil),  // 1: turn.v1.RenewSessionRequest
@@ -1025,15 +1084,16 @@ var file_turn_v1_turnd_proto_goTypes = []any{
 	(*DecideRequest)(nil),        // 7: turn.v1.DecideRequest
 	(*RoomRef)(nil),              // 8: turn.v1.RoomRef
 	(*HandOverRequest)(nil),      // 9: turn.v1.HandOverRequest
-	(*ReclaimRequest)(nil),       // 10: turn.v1.ReclaimRequest
-	(*ReclaimResponse)(nil),      // 11: turn.v1.ReclaimResponse
-	(*Ack)(nil),                  // 12: turn.v1.Ack
-	(*IceServers)(nil),           // 13: turn.v1.IceServers
-	(*IceServer)(nil),            // 14: turn.v1.IceServer
-	(*Envelope)(nil),             // 15: turn.v1.Envelope
+	(*CoHostRequest)(nil),        // 10: turn.v1.CoHostRequest
+	(*ReclaimRequest)(nil),       // 11: turn.v1.ReclaimRequest
+	(*ReclaimResponse)(nil),      // 12: turn.v1.ReclaimResponse
+	(*Ack)(nil),                  // 13: turn.v1.Ack
+	(*IceServers)(nil),           // 14: turn.v1.IceServers
+	(*IceServer)(nil),            // 15: turn.v1.IceServer
+	(*Envelope)(nil),             // 16: turn.v1.Envelope
 }
 var file_turn_v1_turnd_proto_depIdxs = []int32{
-	14, // 0: turn.v1.IceServers.ice_servers:type_name -> turn.v1.IceServer
+	15, // 0: turn.v1.IceServers.ice_servers:type_name -> turn.v1.IceServer
 	0,  // 1: turn.v1.Turnd.Credentials:input_type -> turn.v1.CredentialsRequest
 	1,  // 2: turn.v1.Turnd.RenewSession:input_type -> turn.v1.RenewSessionRequest
 	3,  // 3: turn.v1.Turnd.CreateRoom:input_type -> turn.v1.CreateRoomRequest
@@ -1043,21 +1103,25 @@ var file_turn_v1_turnd_proto_depIdxs = []int32{
 	8,  // 7: turn.v1.Turnd.RoomCredentials:input_type -> turn.v1.RoomRef
 	8,  // 8: turn.v1.Turnd.CloseRoom:input_type -> turn.v1.RoomRef
 	9,  // 9: turn.v1.Turnd.HandOver:input_type -> turn.v1.HandOverRequest
-	10, // 10: turn.v1.Turnd.Reclaim:input_type -> turn.v1.ReclaimRequest
-	15, // 11: turn.v1.Turnd.Room:input_type -> turn.v1.Envelope
-	13, // 12: turn.v1.Turnd.Credentials:output_type -> turn.v1.IceServers
-	2,  // 13: turn.v1.Turnd.RenewSession:output_type -> turn.v1.RenewSessionResponse
-	4,  // 14: turn.v1.Turnd.CreateRoom:output_type -> turn.v1.CreateRoomResponse
-	6,  // 15: turn.v1.Turnd.JoinRoom:output_type -> turn.v1.JoinRoomResponse
-	12, // 16: turn.v1.Turnd.Admit:output_type -> turn.v1.Ack
-	12, // 17: turn.v1.Turnd.Deny:output_type -> turn.v1.Ack
-	13, // 18: turn.v1.Turnd.RoomCredentials:output_type -> turn.v1.IceServers
-	12, // 19: turn.v1.Turnd.CloseRoom:output_type -> turn.v1.Ack
-	12, // 20: turn.v1.Turnd.HandOver:output_type -> turn.v1.Ack
-	11, // 21: turn.v1.Turnd.Reclaim:output_type -> turn.v1.ReclaimResponse
-	15, // 22: turn.v1.Turnd.Room:output_type -> turn.v1.Envelope
-	12, // [12:23] is the sub-list for method output_type
-	1,  // [1:12] is the sub-list for method input_type
+	10, // 10: turn.v1.Turnd.AppointCoHost:input_type -> turn.v1.CoHostRequest
+	10, // 11: turn.v1.Turnd.RevokeCoHost:input_type -> turn.v1.CoHostRequest
+	11, // 12: turn.v1.Turnd.Reclaim:input_type -> turn.v1.ReclaimRequest
+	16, // 13: turn.v1.Turnd.Room:input_type -> turn.v1.Envelope
+	14, // 14: turn.v1.Turnd.Credentials:output_type -> turn.v1.IceServers
+	2,  // 15: turn.v1.Turnd.RenewSession:output_type -> turn.v1.RenewSessionResponse
+	4,  // 16: turn.v1.Turnd.CreateRoom:output_type -> turn.v1.CreateRoomResponse
+	6,  // 17: turn.v1.Turnd.JoinRoom:output_type -> turn.v1.JoinRoomResponse
+	13, // 18: turn.v1.Turnd.Admit:output_type -> turn.v1.Ack
+	13, // 19: turn.v1.Turnd.Deny:output_type -> turn.v1.Ack
+	14, // 20: turn.v1.Turnd.RoomCredentials:output_type -> turn.v1.IceServers
+	13, // 21: turn.v1.Turnd.CloseRoom:output_type -> turn.v1.Ack
+	13, // 22: turn.v1.Turnd.HandOver:output_type -> turn.v1.Ack
+	13, // 23: turn.v1.Turnd.AppointCoHost:output_type -> turn.v1.Ack
+	13, // 24: turn.v1.Turnd.RevokeCoHost:output_type -> turn.v1.Ack
+	12, // 25: turn.v1.Turnd.Reclaim:output_type -> turn.v1.ReclaimResponse
+	16, // 26: turn.v1.Turnd.Room:output_type -> turn.v1.Envelope
+	14, // [14:27] is the sub-list for method output_type
+	1,  // [1:14] is the sub-list for method input_type
 	1,  // [1:1] is the sub-list for extension type_name
 	1,  // [1:1] is the sub-list for extension extendee
 	0,  // [0:1] is the sub-list for field type_name
@@ -1074,7 +1138,7 @@ func file_turn_v1_turnd_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_turn_v1_turnd_proto_rawDesc), len(file_turn_v1_turnd_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -198,6 +198,19 @@ func (e Event) HostChange() (from, to string, ok bool) {
 	return h.From, h.To, true
 }
 
+// CoHost reads a "sys.cohost-added" or "sys.cohost-removed" event: peer is the
+// one whose co-host powers began or ended. ok is false for any other event.
+func (e Event) CoHost() (peer string, added, ok bool) {
+	if e.Kind != "sys.cohost-added" && e.Kind != "sys.cohost-removed" {
+		return "", false, false
+	}
+	var b struct{ Peer string }
+	if json.Unmarshal(e.Body, &b) != nil || b.Peer == "" {
+		return "", false, false
+	}
+	return b.Peer, e.Kind == "sys.cohost-added", true
+}
+
 // Room is a peer's membership of a room.
 type Room struct {
 	ID      string
@@ -205,7 +218,8 @@ type Room struct {
 	Host    string // the host's peer ID when the room was entered ("host" for the first one): see CurrentHost
 	Expires time.Time
 
-	host string // the current host's peer ID; guarded by mu
+	host   string // the current host's peer ID; guarded by mu
+	cohost bool   // this peer is a co-host; guarded by mu
 
 	cc     *grpc.ClientConn
 	ownsCC bool
@@ -403,6 +417,16 @@ func (r *Room) pump() {
 			r.host = to // before the event reaches the caller: IsHost is right when it reads it
 			r.mu.Unlock()
 		}
+		if p, added, ok := ev.CoHost(); ok && p == r.Peer {
+			r.mu.Lock()
+			r.cohost = added
+			r.mu.Unlock()
+		}
+		if _, to, ok := ev.HostChange(); ok && to == r.Peer {
+			r.mu.Lock()
+			r.cohost = false // the host's powers contain a co-host's
+			r.mu.Unlock()
+		}
 		select {
 		case r.events <- ev:
 		case <-r.stream.Context().Done():
@@ -500,6 +524,28 @@ func (r *Room) CurrentHost() string {
 	return r.host
 }
 
+// IsCoHost reports whether this peer is a co-host now (appointed by the host:
+// it may Admit, Deny and Close, and hears the knocks too), as of the last
+// "sys.cohost-added" or "sys.cohost-removed" this room has read.
+func (r *Room) IsCoHost() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cohost
+}
+
+// AppointCoHost lets an admitted guest admit, deny and close beside the host;
+// RevokeCoHost takes it back at once (host only). There is still one host.
+func (r *Room) AppointCoHost(ctx context.Context, peer string) error {
+	_, err := r.rpc.AppointCoHost(r.auth(ctx), &turnv1.CoHostRequest{Room: r.ID, Peer: peer})
+	return err
+}
+
+// RevokeCoHost: see [Room.AppointCoHost].
+func (r *Room) RevokeCoHost(ctx context.Context, peer string) error {
+	_, err := r.rpc.RevokeCoHost(r.auth(ctx), &turnv1.CoHostRequest{Room: r.ID, Peer: peer})
+	return err
+}
+
 // HandOver gives the host role to an admitted guest that is connected (host
 // only). This peer stops being the host: its token is dead, its stream ends
 // after the "sys.host-changed" that tells everyone, and [Reclaim] brings the
@@ -519,11 +565,17 @@ func (r *Room) Credentials(ctx context.Context) (creds.Response, error) {
 	return toCreds(resp), nil
 }
 
+// CloseRoom ends the room for everyone (host or co-host).
+func (r *Room) CloseRoom(ctx context.Context) error {
+	_, err := r.rpc.CloseRoom(r.auth(ctx), &turnv1.RoomRef{Room: r.ID})
+	return err
+}
+
 // Close leaves the room (the host's leaving closes it) and releases the
 // connection if the room dialed it.
 func (r *Room) Close(ctx context.Context) error {
 	var err error
-	if r.IsHost() {
+	if r.IsHost() { // a co-host's Close only leaves; it ends the room with CloseRoom
 		_, err = r.rpc.CloseRoom(r.auth(ctx), &turnv1.RoomRef{Room: r.ID})
 	}
 	r.cancel() // ending the stream is leaving
