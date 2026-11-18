@@ -191,7 +191,7 @@ func (s *Server) handleSTUN(tr transport, from netip.AddrPort, m *stun.Message) 
 		s.handleSend(tr, from, m)
 	case m.Class == stun.ClassRequest:
 		if s.cfg.Observer != nil {
-			m.Received = time.Now()
+			m.Received = time.Now().UnixNano()
 		}
 		switch m.Method {
 		case stun.MethodAllocate, stun.MethodRefresh, stun.MethodCreatePermission, stun.MethodChannelBind:

@@ -15,7 +15,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
-	"time"
 )
 
 // Wire constants (RFC 8489 section 5).
@@ -102,10 +101,11 @@ type Message struct {
 	// Pad is the byte used to pad attribute values when encoding (zero by
 	// default; RFC 5769 vectors pad with spaces).
 	Pad byte
-	// Received is when a server took the message off the wire. It is set only
-	// when the server has an Observer (it costs one clock read) and is never
-	// encoded.
-	Received time.Time
+	// Received is when a server took the message off the wire, in Unix
+	// nanoseconds (an int64, not a time.Time: 8 bytes keep the decoded Message
+	// in its size class on the relay's Send path). It is set only when the
+	// server has an Observer (one clock read) and is never encoded.
+	Received int64
 
 	raw          []byte
 	intKey       []byte

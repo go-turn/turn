@@ -56,7 +56,7 @@ func (s *Server) observe(tr transport, req *stun.Message, code int, policy strin
 		return
 	}
 	s.cfg.Observer.Request(RequestInfo{Method: methodName(req.Method), Transport: tr.name(),
-		Code: code, Policy: policy, Received: req.Received, End: time.Now()})
+		Code: code, Policy: policy, Received: time.Unix(0, req.Received), End: time.Now()})
 }
 
 var (
