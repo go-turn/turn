@@ -549,7 +549,8 @@ func TestCredentials(t *testing.T) {
 }
 
 func TestLeaveByEndingTheStream(t *testing.T) {
-	f := newFix(t, nil)
+	// HostGrace < 0 is the behaviour before the grace period existed.
+	f := newFix(t, func(c *Config) { c.Limits.HostGrace = -1 })
 	c := f.create("alice")
 	g := f.join(c.Room)
 	host := f.open(c.Room, c.Token)

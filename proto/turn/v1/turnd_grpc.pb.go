@@ -45,6 +45,8 @@ const (
 	Turnd_Deny_FullMethodName            = "/turn.v1.Turnd/Deny"
 	Turnd_RoomCredentials_FullMethodName = "/turn.v1.Turnd/RoomCredentials"
 	Turnd_CloseRoom_FullMethodName       = "/turn.v1.Turnd/CloseRoom"
+	Turnd_HandOver_FullMethodName        = "/turn.v1.Turnd/HandOver"
+	Turnd_Reclaim_FullMethodName         = "/turn.v1.Turnd/Reclaim"
 	Turnd_Room_FullMethodName            = "/turn.v1.Turnd/Room"
 )
 
@@ -78,6 +80,20 @@ type TurndClient interface {
 	RoomCredentials(ctx context.Context, in *RoomRef, opts ...grpc.CallOption) (*IceServers, error)
 	// CloseRoom ends the room (host token only).
 	CloseRoom(ctx context.Context, in *RoomRef, opts ...grpc.CallOption) (*Ack, error)
+	// HandOver gives the host role to an admitted guest that is connected (host
+	// token only): NOT_FOUND (no such peer), FAILED_PRECONDITION (the guest is
+	// still pending), INVALID_ARGUMENT (the host itself), PERMISSION_DENIED (the
+	// caller is not the host). The old host's token is dead afterwards: it comes
+	// back with Reclaim, as an ordinary guest. Every peer gets sys.host-changed.
+	HandOver(ctx context.Context, in *HandOverRequest, opts ...grpc.CallOption) (*Ack, error)
+	// Reclaim is how a person who was the host comes back. Bearer: a SESSION token
+	// (never a room token) whose subject is the host's. While the host role is
+	// still theirs (the grace period, or a stale stream still open) they take it
+	// back with a NEW host token and nothing changes for the others. After a
+	// handover the same call returns a guest token for the SAME peer ID: the person
+	// is an admitted guest of the new host (it is told with sys.join), no knock.
+	// PERMISSION_DENIED: the subject was never the host of this room.
+	Reclaim(ctx context.Context, in *ReclaimRequest, opts ...grpc.CallOption) (*ReclaimResponse, error)
 	// Room is the room's one bidirectional stream. Metadata: authorization (the
 	// peer token) and x-turn-room (the room ID). The server sends every event for
 	// the peer, system events included; the peer sends messages, routed host to
@@ -175,6 +191,26 @@ func (c *turndClient) CloseRoom(ctx context.Context, in *RoomRef, opts ...grpc.C
 	return out, nil
 }
 
+func (c *turndClient) HandOver(ctx context.Context, in *HandOverRequest, opts ...grpc.CallOption) (*Ack, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Ack)
+	err := c.cc.Invoke(ctx, Turnd_HandOver_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *turndClient) Reclaim(ctx context.Context, in *ReclaimRequest, opts ...grpc.CallOption) (*ReclaimResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReclaimResponse)
+	err := c.cc.Invoke(ctx, Turnd_Reclaim_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *turndClient) Room(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Envelope, Envelope], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &Turnd_ServiceDesc.Streams[0], Turnd_Room_FullMethodName, cOpts...)
@@ -218,6 +254,20 @@ type TurndServer interface {
 	RoomCredentials(context.Context, *RoomRef) (*IceServers, error)
 	// CloseRoom ends the room (host token only).
 	CloseRoom(context.Context, *RoomRef) (*Ack, error)
+	// HandOver gives the host role to an admitted guest that is connected (host
+	// token only): NOT_FOUND (no such peer), FAILED_PRECONDITION (the guest is
+	// still pending), INVALID_ARGUMENT (the host itself), PERMISSION_DENIED (the
+	// caller is not the host). The old host's token is dead afterwards: it comes
+	// back with Reclaim, as an ordinary guest. Every peer gets sys.host-changed.
+	HandOver(context.Context, *HandOverRequest) (*Ack, error)
+	// Reclaim is how a person who was the host comes back. Bearer: a SESSION token
+	// (never a room token) whose subject is the host's. While the host role is
+	// still theirs (the grace period, or a stale stream still open) they take it
+	// back with a NEW host token and nothing changes for the others. After a
+	// handover the same call returns a guest token for the SAME peer ID: the person
+	// is an admitted guest of the new host (it is told with sys.join), no knock.
+	// PERMISSION_DENIED: the subject was never the host of this room.
+	Reclaim(context.Context, *ReclaimRequest) (*ReclaimResponse, error)
 	// Room is the room's one bidirectional stream. Metadata: authorization (the
 	// peer token) and x-turn-room (the room ID). The server sends every event for
 	// the peer, system events included; the peer sends messages, routed host to
@@ -258,6 +308,12 @@ func (UnimplementedTurndServer) RoomCredentials(context.Context, *RoomRef) (*Ice
 }
 func (UnimplementedTurndServer) CloseRoom(context.Context, *RoomRef) (*Ack, error) {
 	return nil, status.Error(codes.Unimplemented, "method CloseRoom not implemented")
+}
+func (UnimplementedTurndServer) HandOver(context.Context, *HandOverRequest) (*Ack, error) {
+	return nil, status.Error(codes.Unimplemented, "method HandOver not implemented")
+}
+func (UnimplementedTurndServer) Reclaim(context.Context, *ReclaimRequest) (*ReclaimResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Reclaim not implemented")
 }
 func (UnimplementedTurndServer) Room(grpc.BidiStreamingServer[Envelope, Envelope]) error {
 	return status.Error(codes.Unimplemented, "method Room not implemented")
@@ -427,6 +483,42 @@ func _Turnd_CloseRoom_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Turnd_HandOver_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HandOverRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TurndServer).HandOver(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Turnd_HandOver_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TurndServer).HandOver(ctx, req.(*HandOverRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Turnd_Reclaim_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReclaimRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TurndServer).Reclaim(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Turnd_Reclaim_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TurndServer).Reclaim(ctx, req.(*ReclaimRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Turnd_Room_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(TurndServer).Room(&grpc.GenericServerStream[Envelope, Envelope]{ServerStream: stream})
 }
@@ -472,6 +564,14 @@ var Turnd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CloseRoom",
 			Handler:    _Turnd_CloseRoom_Handler,
+		},
+		{
+			MethodName: "HandOver",
+			Handler:    _Turnd_HandOver_Handler,
+		},
+		{
+			MethodName: "Reclaim",
+			Handler:    _Turnd_Reclaim_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

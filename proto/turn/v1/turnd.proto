@@ -55,6 +55,22 @@ service Turnd {
   // CloseRoom ends the room (host token only).
   rpc CloseRoom(RoomRef) returns (Ack);
 
+  // HandOver gives the host role to an admitted guest that is connected (host
+  // token only): NOT_FOUND (no such peer), FAILED_PRECONDITION (the guest is
+  // still pending), INVALID_ARGUMENT (the host itself), PERMISSION_DENIED (the
+  // caller is not the host). The old host's token is dead afterwards: it comes
+  // back with Reclaim, as an ordinary guest. Every peer gets sys.host-changed.
+  rpc HandOver(HandOverRequest) returns (Ack);
+
+  // Reclaim is how a person who was the host comes back. Bearer: a SESSION token
+  // (never a room token) whose subject is the host's. While the host role is
+  // still theirs (the grace period, or a stale stream still open) they take it
+  // back with a NEW host token and nothing changes for the others. After a
+  // handover the same call returns a guest token for the SAME peer ID: the person
+  // is an admitted guest of the new host (it is told with sys.join), no knock.
+  // PERMISSION_DENIED: the subject was never the host of this room.
+  rpc Reclaim(ReclaimRequest) returns (ReclaimResponse);
+
   // Room is the room's one bidirectional stream. Metadata: authorization (the
   // peer token) and x-turn-room (the room ID). The server sends every event for
   // the peer, system events included; the peer sends messages, routed host to
@@ -105,6 +121,24 @@ message RoomRef {
   string room = 1;
 }
 
+message HandOverRequest {
+  string room = 1;
+  string to = 2; // the peer ID of an admitted, connected guest
+}
+
+message ReclaimRequest {
+  string room = 1;
+}
+
+message ReclaimResponse {
+  string room = 1;
+  string peer = 2; // the SAME peer ID as before
+  bool host = 3; // true: the person is the host again; false: an admitted guest
+  string host_peer = 4; // the current host's peer ID
+  string token = 5; // a new peer token; the old one is dead
+  int64 expires = 6; // the room's, never extended
+}
+
 message Ack {}
 
 // IceServers is shaped like an RTCConfiguration's iceServers list.
@@ -127,6 +161,11 @@ message IceServer {
 //	sys.admitted to a guest: the host let it in
 //	sys.denied   to a guest: refused, removed, or its wait expired; the token is dead
 //	sys.closed   to everyone: the room is over (the stream then ends)
+//	sys.host-changed to everyone, the old host included: body {"from":"<peer>","to":"<peer>"},
+//	             the host role moved; peer IDs do not change. The new host is also
+//	             told the pending guests (sys.knock) and the admitted ones (sys.join)
+//	             again, and gets the messages that were queued for the old host.
+//	             "host" as a message's to means the CURRENT host, whoever it is
 //	sys.error    to the sender of a message the OTHER peer could not take (gone,
 //	             queue full): body "<Code>: <reason>" with the gRPC code's name,
 //	             e.g. "NotFound: no such peer"; the stream stays open

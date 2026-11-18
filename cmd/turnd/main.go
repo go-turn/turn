@@ -84,6 +84,7 @@ func RootCmd() *cobra.Command {
 	f.DurationVar(&cfg.RenewalLifetime, "session-renewal-lifetime", 168*time.Hour, "how long a login can be renewed (RenewSession): set it to the client's refresh_lifetime at bridge; the refresh token is kept in memory, server side, and a restart ends every renewal (0 turns renewal off)")
 	f.DurationVar(&cfg.CredTTL, "cred-ttl", time.Hour, "lifetime of host TURN credentials (a guest's never outlive the room)")
 	f.DurationVar(&cfg.Limits.RoomTTL, "room-ttl", time.Hour, "lifetime of a room")
+	f.DurationVar(&cfg.Limits.HostGrace, "host-grace", 2*time.Minute, "how long a room outlives its host's stream: the host back within it keeps the role, after it the earliest-admitted guest becomes the host (negative: the host leaving closes the room)")
 	f.IntVar(&cfg.Limits.MaxMessageBytes, "max-message-bytes", 16<<10, "largest message body")
 	f.IntVar(&cfg.Limits.MaxQueue, "max-queue", 64, "events queued per peer")
 	f.IntVar(&cfg.Limits.MaxGuests, "max-guests", 8, "guests per room")
