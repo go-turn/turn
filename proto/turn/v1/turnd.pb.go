@@ -164,7 +164,11 @@ func (x *RenewSessionResponse) GetExpires() int64 {
 }
 
 type CreateRoomRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// max_guests is how many guests this room admits AT ONCE (a leaving guest
+	// frees its place). 0: the default, 8 (or the server's ceiling if lower).
+	// Above the server's --max-guests (the ceiling) or negative: INVALID_ARGUMENT.
+	MaxGuests     int32 `protobuf:"varint,1,opt,name=max_guests,json=maxGuests,proto3" json:"max_guests,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -199,12 +203,20 @@ func (*CreateRoomRequest) Descriptor() ([]byte, []int) {
 	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{3}
 }
 
+func (x *CreateRoomRequest) GetMaxGuests() int32 {
+	if x != nil {
+		return x.MaxGuests
+	}
+	return 0
+}
+
 type CreateRoomResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"` // 128 random bits, 32 hex characters
-	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"` // "host"
+	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"` // the creator's peer ID, ordinary ("g1"); no peer is ever named "host"
 	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
-	Expires       int64                  `protobuf:"varint,4,opt,name=expires,proto3" json:"expires,omitempty"` // Unix seconds
+	Expires       int64                  `protobuf:"varint,4,opt,name=expires,proto3" json:"expires,omitempty"`                      // Unix seconds
+	MaxGuests     int32                  `protobuf:"varint,5,opt,name=max_guests,json=maxGuests,proto3" json:"max_guests,omitempty"` // the room's cap on guests admitted at once
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -263,6 +275,13 @@ func (x *CreateRoomResponse) GetToken() string {
 func (x *CreateRoomResponse) GetExpires() int64 {
 	if x != nil {
 		return x.Expires
+	}
+	return 0
+}
+
+func (x *CreateRoomResponse) GetMaxGuests() int32 {
+	if x != nil {
+		return x.MaxGuests
 	}
 	return 0
 }
@@ -892,7 +911,9 @@ func (x *IceServer) GetCredential() string {
 //	             the host role moved; peer IDs do not change. The new host is also
 //	             told the pending guests (sys.knock) and the admitted ones (sys.join)
 //	             again, and gets the messages that were queued for the old host.
-//	             "host" as a message's to means the CURRENT host, whoever it is
+//	             "host" as a message's to is an ALIAS for the CURRENT host, the same
+//	             for every sender (the host using it is told sys.error InvalidArgument);
+//	             "from" and every event name real peer IDs, never "host"
 //	sys.cohost-added / sys.cohost-removed to everyone: body {"peer":"<peer>"}; the
 //	             knocks, joins and leaves go to the host and every co-host
 //	sys.error    to the sender of a message the OTHER peer could not take (gone,
@@ -989,13 +1010,17 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x13RenewSessionRequest\"F\n" +
 	"\x14RenewSessionResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x18\n" +
-	"\aexpires\x18\x02 \x01(\x03R\aexpires\"\x13\n" +
-	"\x11CreateRoomRequest\"l\n" +
+	"\aexpires\x18\x02 \x01(\x03R\aexpires\"2\n" +
+	"\x11CreateRoomRequest\x12\x1d\n" +
+	"\n" +
+	"max_guests\x18\x01 \x01(\x05R\tmaxGuests\"\x8b\x01\n" +
 	"\x12CreateRoomResponse\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
 	"\x04peer\x18\x02 \x01(\tR\x04peer\x12\x14\n" +
 	"\x05token\x18\x03 \x01(\tR\x05token\x12\x18\n" +
-	"\aexpires\x18\x04 \x01(\x03R\aexpires\"9\n" +
+	"\aexpires\x18\x04 \x01(\x03R\aexpires\x12\x1d\n" +
+	"\n" +
+	"max_guests\x18\x05 \x01(\x05R\tmaxGuests\"9\n" +
 	"\x0fJoinRoomRequest\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"\x98\x01\n" +

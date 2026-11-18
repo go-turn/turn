@@ -215,7 +215,7 @@ func (e Event) CoHost() (peer string, added, ok bool) {
 type Room struct {
 	ID      string
 	Peer    string
-	Host    string // the host's peer ID when the room was entered ("host" for the first one): see CurrentHost
+	Host    string // the host's peer ID when the room was entered (a real ID, never "host"): see HostPeer
 	Expires time.Time
 
 	host   string // the current host's peer ID; guarded by mu
@@ -237,12 +237,12 @@ type Room struct {
 }
 
 // Create opens a room as its host and starts receiving its events.
-func Create(ctx context.Context, base, sessionToken string) (*Room, error) {
+func Create(ctx context.Context, base, sessionToken string, opts ...CreateOption) (*Room, error) {
 	cc, err := Dial(base, wstransport.ClientConfig{})
 	if err != nil {
 		return nil, err
 	}
-	r, err := CreateConn(ctx, cc, sessionToken)
+	r, err := CreateConn(ctx, cc, sessionToken, opts...)
 	if err != nil {
 		cc.Close()
 		return nil, err
@@ -252,14 +252,28 @@ func Create(ctx context.Context, base, sessionToken string) (*Room, error) {
 }
 
 // CreateConn is [Create] over an existing connection, which the caller closes.
-func CreateConn(ctx context.Context, cc *grpc.ClientConn, sessionToken string) (*Room, error) {
+func CreateConn(ctx context.Context, cc *grpc.ClientConn, sessionToken string, opts ...CreateOption) (*Room, error) {
+	var o createOpts
+	for _, f := range opts {
+		f(&o)
+	}
 	rpc := turnv1.NewTurndClient(cc)
-	resp, err := rpc.CreateRoom(withToken(ctx, sessionToken), &turnv1.CreateRoomRequest{})
+	resp, err := rpc.CreateRoom(withToken(ctx, sessionToken), &turnv1.CreateRoomRequest{MaxGuests: int32(o.maxGuests)})
 	if err != nil {
 		return nil, err
 	}
 	return open(cc, rpc, resp.GetRoom(), resp.GetPeer(), resp.GetPeer(), resp.GetToken(), resp.GetExpires())
 }
+
+// CreateOption adjusts [Create].
+type CreateOption func(*createOpts)
+
+type createOpts struct{ maxGuests int }
+
+// WithMaxGuests asks for a room that admits n guests AT ONCE (a guest that
+// leaves frees its place); the default is 8, the server refuses more than its
+// own ceiling with InvalidArgument.
+func WithMaxGuests(n int) CreateOption { return func(o *createOpts) { o.maxGuests = n } }
 
 // JoinOption adjusts [Join].
 type JoinOption func(*joinOpts)
@@ -451,7 +465,9 @@ func (r *Room) finish(err error) {
 
 func (r *Room) auth(ctx context.Context) context.Context { return withToken(ctx, r.token) }
 
-// Send sends a message to a peer ("host" from a guest; a guest's peer ID from
+// Send sends a message to a peer: "host" is the alias of the current host (for
+// everyone but the host, which would be addressing itself: the server answers
+// with a sys.error InvalidArgument), or a real peer ID (a guest's, from
 // the host). A message the server refuses ends the stream: see Recv.
 func (r *Room) Send(ctx context.Context, to, kind string, body []byte) error {
 	r.sendMu.Lock()
@@ -514,11 +530,13 @@ func (r *Room) Deny(ctx context.Context, peer string) error {
 // that created it, and for a guest from the moment it receives the
 // "sys.host-changed" that names it (it then has the powers of the host: Admit,
 // Deny, Close, Credentials for the others).
-func (r *Room) IsHost() bool { return r.CurrentHost() == r.Peer }
+func (r *Room) IsHost() bool { return r.HostPeer() == r.Peer }
 
-// CurrentHost is the peer ID of the host as of the last "sys.host-changed" this
-// room has read. Messages to "host" go to it whoever it is.
-func (r *Room) CurrentHost() string {
+// HostPeer is the REAL peer ID of the host: the one the server gave when the
+// room was created, joined or reclaimed, then the "to" of the last
+// "sys.host-changed" this room has read. "host" as the destination of Send is
+// an alias that always lands on it.
+func (r *Room) HostPeer() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.host
@@ -578,7 +596,18 @@ func (r *Room) Close(ctx context.Context) error {
 	if r.IsHost() { // a co-host's Close only leaves; it ends the room with CloseRoom
 		_, err = r.rpc.CloseRoom(r.auth(ctx), &turnv1.RoomRef{Room: r.ID})
 	}
-	r.cancel() // ending the stream is leaving
+	// A half-close says goodbye (the server frees the place and tells the host at
+	// once); a bare cancel looks like a dropped connection, which the server keeps
+	// for a grace period so that the guest can resume.
+	r.sendMu.Lock()
+	_ = r.stream.CloseSend()
+	r.sendMu.Unlock()
+	select {
+	case <-r.done:
+	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
+	}
+	r.cancel()
 	if r.ownsCC {
 		_ = r.cc.Close()
 	}

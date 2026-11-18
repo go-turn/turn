@@ -260,3 +260,50 @@ func TestCoHostOnlyKnocksAreAnsweredAfterExpiryTooAndCoHostHearsLeaves(t *testin
 		_ = name
 	}
 }
+
+// "host" is an address with ONE meaning for every sender: the current host.
+func TestHostAliasLandsOnTheCurrentHostForEverySender(t *testing.T) {
+	f := newFix(t, nil)
+	cr := newCrowd(t, f, 3)
+	g2, g3, g4 := cr.order[0], cr.order[1], cr.order[2]
+	if cr.hid == "host" || g2 == "host" || g3 == "host" || g4 == "host" {
+		t.Fatal("a peer is named host")
+	}
+	if err := f.appoint(cr.room, cr.htok, g3); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.handOver(cr.room, cr.htok, g2); err != nil { // g2 is the host now
+		t.Fatal(err)
+	}
+	back, err := f.reclaim(cr.room, "alice") // the old host, an ordinary guest again
+	if err != nil || back.Peer != cr.hid || back.Host {
+		t.Fatalf("%+v %v", back, err)
+	}
+	old := f.open(cr.room, back.Token)
+	newHost := cr.gs[g2]
+	for sender, p := range map[string]*ps{cr.hid: old, g3: cr.gs[g3], g4: cr.gs[g4]} { // old host, co-host, guest
+		p.send(sender, "host", "ping", []byte(sender))
+		e := newHost.waitFor(t, "ping")
+		if e.From != sender || e.To != g2 || string(e.Body) != sender {
+			t.Errorf("to:\"host\" from %s landed as %v", sender, e)
+		}
+	}
+	// the host addressing "host" is addressing itself: refused, said clearly
+	newHost.send(g2, "host", "ping", nil)
+	if e := newHost.waitFor(t, "sys.error"); !strings.HasPrefix(string(e.Body), "InvalidArgument: ") {
+		t.Fatalf("%v", e)
+	}
+	// the real ID of the host works too, for a guest; nothing else does
+	cr.gs[g4].send(g4, g2, "ping", []byte("by-id"))
+	if e := newHost.waitFor(t, "ping"); string(e.Body) != "by-id" {
+		t.Fatalf("%v", e)
+	}
+	// a v0.6 client that hard-codes "host" as the creator's ID fails clearly
+	// (from is checked against the real ID the server gave), never silently
+	creator := f.create("bob")
+	cs := f.open(creator.Room, creator.Token)
+	cs.send("host", "g99", "x", nil)
+	if got := cs.ended(t); got != codes.PermissionDenied {
+		t.Fatalf("a client that sends from \"host\": %v", got)
+	}
+}

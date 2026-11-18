@@ -89,7 +89,7 @@ func TestPendingGuestIsConfined(t *testing.T) {
 	for range 5 { // knock, join, knock (the first mallory), leave, knock
 		host.next(t)
 	}
-	host.send("host", p.Peer, "offer", nil)
+	host.send(c.Peer, p.Peer, "offer", nil)
 	if e := host.next(t); e.Kind != "sys.error" || !strings.HasPrefix(string(e.Body), "NotFound: ") {
 		t.Errorf("host message to a pending guest: %v", e)
 	}

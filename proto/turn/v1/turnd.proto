@@ -104,13 +104,19 @@ message RenewSessionResponse {
   int64 expires = 2; // Unix seconds
 }
 
-message CreateRoomRequest {}
+message CreateRoomRequest {
+  // max_guests is how many guests this room admits AT ONCE (a leaving guest
+  // frees its place). 0: the default, 8 (or the server's ceiling if lower).
+  // Above the server's --max-guests (the ceiling) or negative: INVALID_ARGUMENT.
+  int32 max_guests = 1;
+}
 
 message CreateRoomResponse {
   string room = 1; // 128 random bits, 32 hex characters
-  string peer = 2; // "host"
+  string peer = 2; // the creator's peer ID, ordinary ("g1"); no peer is ever named "host"
   string token = 3;
   int64 expires = 4; // Unix seconds
+  int32 max_guests = 5; // the room's cap on guests admitted at once
 }
 
 message JoinRoomRequest {
@@ -185,7 +191,9 @@ message IceServer {
 //	             the host role moved; peer IDs do not change. The new host is also
 //	             told the pending guests (sys.knock) and the admitted ones (sys.join)
 //	             again, and gets the messages that were queued for the old host.
-//	             "host" as a message's to means the CURRENT host, whoever it is
+//	             "host" as a message's to is an ALIAS for the CURRENT host, the same
+//	             for every sender (the host using it is told sys.error InvalidArgument);
+//	             "from" and every event name real peer IDs, never "host"
 //	sys.cohost-added / sys.cohost-removed to everyone: body {"peer":"<peer>"}; the
 //	             knocks, joins and leaves go to the host and every co-host
 //	sys.error    to the sender of a message the OTHER peer could not take (gone,

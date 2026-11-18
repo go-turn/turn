@@ -131,14 +131,14 @@ func TestHostKilledThenPromotionThenNewcomerAndRouting(t *testing.T) {
 			for i, g := range guests {
 				e := until(t, g, "sys.host-changed")
 				from, to, ok := e.HostChange()
-				if !ok || from != "host" || to != first.Peer {
+				if !ok || from != host.Peer || to != first.Peer {
 					t.Fatalf("guest %d: %v %s %s", i, e, from, to)
 				}
-				if g.CurrentHost() != first.Peer || g.IsHost() != (i == 0) {
-					t.Fatalf("guest %d: host %s IsHost %v", i, g.CurrentHost(), g.IsHost())
+				if g.HostPeer() != first.Peer || g.IsHost() != (i == 0) {
+					t.Fatalf("guest %d: host %s IsHost %v", i, g.HostPeer(), g.IsHost())
 				}
 			}
-			if !first.IsHost() || first.Peer == "host" || first.Host != "host" {
+			if !first.IsHost() || first.Peer == "host" || first.Host != host.Peer {
 				t.Fatalf("%+v", first)
 			}
 			// nothing was dropped in the window: the new host got every message
@@ -214,7 +214,7 @@ func TestHostBackWithinGraceIsNotReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer back.Close(ctx(t))
-	if !back.IsHost() || back.Peer != "host" || back.CurrentHost() != "host" {
+	if !back.IsHost() || back.Peer != host.Peer || back.HostPeer() != host.Peer {
 		t.Fatalf("%+v", back)
 	}
 	if e := until(t, back, "update"); string(e.Body) != "while-away" || e.From != g.Peer {
@@ -234,7 +234,7 @@ func TestHostBackWithinGraceIsNotReplaced(t *testing.T) {
 	if err == nil && ev.Kind == "sys.host-changed" {
 		t.Fatalf("a promotion happened: %v", ev)
 	}
-	if g.IsHost() || g.CurrentHost() != "host" {
+	if g.IsHost() || g.HostPeer() != host.Peer {
 		t.Fatal("the guest thinks it is the host")
 	}
 	// a stranger cannot reclaim
@@ -272,8 +272,8 @@ func TestExplicitHandOverAndTheOldHostReturnsAsAGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer back.Close(ctx(t))
-	if back.IsHost() || back.Peer != "host" || back.CurrentHost() != b.Peer {
-		t.Fatalf("%+v host %s", back, back.CurrentHost())
+	if back.IsHost() || back.Peer != host.Peer || back.HostPeer() != b.Peer {
+		t.Fatalf("%+v host %s", back, back.HostPeer())
 	}
 	// the new host is told (again) about the guests that were there, and the old
 	// host's return is a join, never a knock
@@ -282,17 +282,17 @@ func TestExplicitHandOverAndTheOldHostReturnsAsAGuest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if e.Kind == "sys.knock" && e.From == "host" {
+		if e.Kind == "sys.knock" && e.From == host.Peer {
 			t.Fatal("the old host knocked")
 		}
-		if e.Kind == "sys.join" && e.From == "host" {
+		if e.Kind == "sys.join" && e.From == host.Peer {
 			break
 		}
 	}
 	if err := back.Send(ctx(t), "host", "update", []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
-	if e := until(t, b, "update"); e.From != "host" || e.To != b.Peer {
+	if e := until(t, b, "update"); e.From != host.Peer || e.To != b.Peer {
 		t.Fatalf("%v", e)
 	}
 	// and the signed-in guest, promoted later, mints credentials as itself
@@ -375,5 +375,32 @@ func TestCoHostThroughTheClient(t *testing.T) {
 	}
 	if _, _, ok := (client.Event{Kind: "sys.join"}).CoHost(); ok {
 		t.Fatal("wrong kind")
+	}
+}
+
+func TestWithMaxGuestsThroughTheClient(t *testing.T) {
+	base := server(t, nil)
+	if _, err := client.Create(ctx(t), base, "user:alice", client.WithMaxGuests(1000)); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("above the ceiling: %v", err)
+	}
+	host, err := client.Create(ctx(t), base, "user:alice", client.WithMaxGuests(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close(ctx(t))
+	g := admitted(t, base, host, "one")
+	// a second guest at once is refused: the host's Admit says why
+	go func() { _, _ = client.Join(ctx(t), base, host.ID, "two") }()
+	k := until(t, host, "sys.knock")
+	if err := host.Admit(ctx(t), k.From); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("%v", err)
+	}
+	// the first leaves (Close says goodbye): its place is free at once
+	if err := g.Close(ctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	until(t, host, "sys.leave")
+	if err := host.Admit(ctx(t), k.From); err != nil {
+		t.Fatalf("a freed place: %v", err)
 	}
 }

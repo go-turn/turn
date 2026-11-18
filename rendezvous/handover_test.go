@@ -15,6 +15,7 @@ import (
 
 // A room of a host and guests that are admitted and streaming.
 type crowd struct {
+	hid   string // the creator's peer ID
 	f     *fix
 	room  string
 	htok  string
@@ -29,7 +30,7 @@ type crowd struct {
 func newCrowd(t *testing.T, f *fix, n int) *crowd {
 	t.Helper()
 	c := f.create("alice")
-	cr := &crowd{f: f, room: c.Room, htok: c.Token, guest: map[string]*turnv1.JoinRoomResponse{}, gs: map[string]*ps{}}
+	cr := &crowd{hid: c.Peer, f: f, room: c.Room, htok: c.Token, guest: map[string]*turnv1.JoinRoomResponse{}, gs: map[string]*ps{}}
 	cr.host = f.open(c.Room, c.Token)
 	for i := 0; i < n; i++ {
 		cr.add(t, "guest")
@@ -137,7 +138,7 @@ func TestHostBackWithinGraceKeepsTheRole(t *testing.T) {
 	cr.gs[g1].send(g1, "host", "offer", []byte("while-away"))
 	f.advance(60)
 	f.s.Sweep()
-	if h := f.hostOf(cr.room); h != "host" {
+	if h := f.hostOf(cr.room); h != cr.hid {
 		t.Fatalf("host %q before the grace is over", h)
 	}
 	// control: nobody is promoted before the end of the grace period
@@ -149,7 +150,7 @@ func TestHostBackWithinGraceKeepsTheRole(t *testing.T) {
 		}
 	}
 	r, err := f.reclaim(cr.room, "alice")
-	if err != nil || !r.Host || r.Peer != "host" || r.HostPeer != "host" || r.Token == cr.htok {
+	if err != nil || !r.Host || r.Peer != cr.hid || r.HostPeer != cr.hid || r.Token == cr.htok {
 		t.Fatalf("%+v %v", r, err)
 	}
 	// the old host token is dead, the new one is the host's
@@ -163,7 +164,7 @@ func TestHostBackWithinGraceKeepsTheRole(t *testing.T) {
 	// well past the grace: still the host, no promotion
 	f.advance(600)
 	f.s.Sweep()
-	if h := f.hostOf(cr.room); h != "host" {
+	if h := f.hostOf(cr.room); h != cr.hid {
 		t.Fatalf("host %q after the host came back", h)
 	}
 	if err := f.decideAs("deny", cr.room, r.Token, g2); err != nil {
@@ -182,7 +183,7 @@ func TestHostStreamReopenedWithItsTokenWithinGrace(t *testing.T) {
 	h := f.open(cr.room, cr.htok) // a network blip: the same token, a new stream
 	f.advance(600)
 	f.s.Sweep()
-	if f.hostOf(cr.room) != "host" || f.s.Rooms() != 1 {
+	if f.hostOf(cr.room) != cr.hid || f.s.Rooms() != 1 {
 		t.Fatal("a host whose stream came back lost the room")
 	}
 	_ = h
@@ -212,7 +213,7 @@ func TestPromotionPastGraceIsTheEarliestAdmittedGuest(t *testing.T) {
 	f.hostLost(c.Room)
 	f.advance(119)
 	f.s.Sweep()
-	if f.hostOf(c.Room) != "host" {
+	if f.hostOf(c.Room) != c.Peer {
 		t.Fatal("promoted before the grace period ended")
 	}
 	f.advance(2)
@@ -223,7 +224,7 @@ func TestPromotionPastGraceIsTheEarliestAdmittedGuest(t *testing.T) {
 	// every peer, the promoted one and the pending one included, is told
 	for id, p := range gs {
 		from, to := hostChanged(t, p.waitFor(t, "sys.host-changed"))
-		if from != "host" || to != k2.Peer {
+		if from != c.Peer || to != k2.Peer {
 			t.Fatalf("%s: %s -> %s", id, from, to)
 		}
 	}
@@ -369,7 +370,7 @@ func TestHandOverRefusals(t *testing.T) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
-	if h := f.hostOf(cr.room); h != "host" {
+	if h := f.hostOf(cr.room); h != cr.hid {
 		t.Fatalf("a refused hand over moved the role to %q", h)
 	}
 	// control: the same call, made right, works
@@ -405,7 +406,7 @@ func TestExplicitHandOverThenTheOldHostReturnsAsAGuest(t *testing.T) {
 	}
 	// the old host is told, then its stream ends
 	from, to := hostChanged(t, cr.host.waitFor(t, "sys.host-changed"))
-	if from != "host" || to != g2 {
+	if from != cr.hid || to != g2 {
 		t.Fatalf("%s -> %s", from, to)
 	}
 	select {
@@ -424,7 +425,7 @@ func TestExplicitHandOverThenTheOldHostReturnsAsAGuest(t *testing.T) {
 		t.Fatalf("a peer token is not a session: %v", err)
 	}
 	r, err := f.reclaim(cr.room, "alice")
-	if err != nil || r.Host || r.Peer != "host" || r.HostPeer != g2 || r.Token == cr.htok {
+	if err != nil || r.Host || r.Peer != cr.hid || r.HostPeer != g2 || r.Token == cr.htok {
 		t.Fatalf("%+v %v", r, err)
 	}
 	if _, err := f.reclaim(cr.room, "alice"); code(err) != codes.PermissionDenied {
@@ -443,23 +444,28 @@ func TestExplicitHandOverThenTheOldHostReturnsAsAGuest(t *testing.T) {
 	old := f.open(cr.room, r.Token)
 	var knocked, joined bool
 	for _, e := range cr.gs[g2].within(150 * time.Millisecond) {
-		if e.From == "host" && e.Kind == "sys.knock" {
+		if e.From == cr.hid && e.Kind == "sys.knock" {
 			knocked = true
 		}
-		if e.From == "host" && e.Kind == "sys.join" {
+		if e.From == cr.hid && e.Kind == "sys.join" {
 			joined = true
 		}
 	}
 	if knocked || !joined {
 		t.Fatalf("knocked %v joined %v", knocked, joined)
 	}
-	// "host" from the old host means the CURRENT host; from the new host it
-	// means the peer called "host"
-	old.send("host", "host", "offer", []byte("from-old"))
-	if e := cr.gs[g2].waitFor(t, "offer"); e.From != "host" || e.To != g2 {
+	// "host" is the same address for every sender: the old host back as a guest
+	// lands on the CURRENT host; the new host addressing it is refused, and
+	// reaches the old host by its real ID
+	old.send(cr.hid, "host", "offer", []byte("from-old"))
+	if e := cr.gs[g2].waitFor(t, "offer"); e.From != cr.hid || e.To != g2 {
 		t.Fatalf("%v", e)
 	}
-	cr.gs[g2].send(g2, "host", "answer", []byte("from-new"))
+	cr.gs[g2].send(g2, "host", "answer", []byte("self"))
+	if e := cr.gs[g2].waitFor(t, "sys.error"); !strings.HasPrefix(string(e.Body), "InvalidArgument: ") {
+		t.Fatalf("%v", e)
+	}
+	cr.gs[g2].send(g2, cr.hid, "answer", []byte("from-new"))
 	if e := old.waitFor(t, "answer"); e.From != g2 || string(e.Body) != "from-new" {
 		t.Fatalf("%v", e)
 	}
@@ -671,7 +677,7 @@ func TestConcurrentEventsLeaveExactlyOneHost(t *testing.T) {
 				t.Fatalf("round %d: %s saw %d handovers", round, id, n)
 			}
 		}
-		if h == "host" {
+		if h == cr.hid {
 			// the host reclaimed the role first: nobody saw a change
 			if len(seen) != 0 {
 				t.Fatalf("round %d: host back yet %v", round, seen)
