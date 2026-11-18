@@ -63,12 +63,38 @@ with no `Origin` header is a native client. Only browser navigations stay HTTP:
 | RPC | token (`authorization: Bearer …` metadata, never a URL) | |
 |---|---|---|
 | `Credentials` | session, or issuer access token | `IceServers{ice_servers[{urls,username,credential}], ttl}` |
+| `RenewSession` | a session token, valid or expired for under 5 minutes | `{token, expires}`: a new session token; `UNAUTHENTICATED` = sign in again (see below) |
 | `CreateRoom` | session or access token | `{room, peer:"host", token, expires}`; the room ID is 128 random bits |
 | `JoinRoom{room,name}` | none: the room ID | `{peer, host, token, expires, pending:true}`; the guest is **pending** |
 | `Admit{room,peer}` / `Deny{room,peer}` | host token | admit a pending guest / refuse it (or remove an admitted one): its token is dead |
 | `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the host |
 | `CloseRoom{room}` | host token | ends the room |
 | `Room(stream Envelope) returns (stream Envelope)` | peer token + `x-turn-room` metadata | the room's one stream: events down, messages up; ending it is leaving |
+
+**Renewing a session.** At `/callback` turnd asks the issuer for `openid
+offline_access`, keeps the refresh token in memory under a random family ID, and
+embeds only that ID in the signed session token (`t2.`; a v0.4.0 `t1.` token has
+none and cannot be renewed). `RenewSession` takes the current session token as
+Bearer, valid or expired for less than 5 minutes, spends the stored refresh token
+at the issuer (go-authn/rp `Refresh`), rotates the stored one and returns a new
+session token. Concurrent renewals of one family share one issuer call (the
+refresh token is spent once, every caller gets the same new token), and a
+retired refresh token is never presented again. Any refusal from the issuer
+(account, passkey or application session revoked, the refresh lifetime over:
+`invalid_grant`, or any other error code it answers) ends the family: it is
+deleted and the answer is `UNAUTHENTICATED`. Failing to reach the issuer is
+`UNAVAILABLE` and leaves the family intact: retry. `UNIMPLEMENTED` when renewal
+is off. Every outcome is logged with the pseudonymous subject, never a token.
+
+In the playground: after the popup's `turnd-session` message, run
+`client.KeepRenewed(ctx, client.Session{Token: tok, Expires: exp}, 5*time.Minute, func(ctx, t) { return client.RenewSession(ctx, base, t) }, store)`
+in a goroutine. It renews 5 minutes before the expiry, retries `UNAVAILABLE`
+every 30 s, and returns when `ctx` ends or on `UNAUTHENTICATED`: then open the
+login popup again. `store` receives each new `Session`, which is the token to use
+for `Credentials` and `CreateRoom` from then on. A page that dials its own
+connection uses `RenewSessionConn`. Renew with the NEWEST token: an old one
+still works while it is valid or within the grace, but a sleeping tab that
+wakes up after more than the grace has to sign in again.
 
 A leaked room link lets a stranger **knock**, not enter. A pending guest only
 receives: it cannot send, cannot get credentials, counts against a separate
@@ -214,6 +240,40 @@ Secrets are files readable by the service account only: 32+ random bytes for
 `--session-key-file`, 16+ for `--turn-secret-file`, the issuer's client secret
 for `--client-secret-file`. Register `<public-url>/callback` as the redirect URI
 of `--client-id` at the issuer.
+
+### Session renewal at go-authn/bridge
+
+A session token lasts `--session-ttl` (1 h). So that a person is not sent back
+through the login popup every hour, turnd asks for `offline_access` at the login
+and keeps the issuer's **refresh token server side**, in memory, never sent to
+the browser (see "Renewing a session" above). It needs the issuer to issue
+refresh tokens to turnd's client. At [go-authn/bridge](https://github.com/go-authn/bridge)
+that is `refresh_lifetime` on the client block (README, "Without a browser" and
+"Several resource servers"; read from the v0.23.12 source, where refresh tokens
+are issued when the client has a `refresh_lifetime`, unknown scopes such as
+`offline_access` are accepted and ignored, and the family's end is fixed at the
+login, rotation does not extend it). The client block turnd needs:
+
+```hcl
+client "turnd" {
+  secret_file      = "/etc/authn-bridge/turnd.secret"      # the file behind --client-secret-file
+  redirect_uris    = ["https://turn.example.org/callback"] # <public-url>/callback, exact
+  refresh_lifetime = "168h"                                # refresh tokens on; 7 days from each login
+}
+```
+
+(`id`, `secret_file` and `redirect_uris` are what the client already has; the
+change is `refresh_lifetime`.) Set `--session-renewal-lifetime` to the same value
+(default 168h): it is how long turnd keeps a family before bridge would refuse it
+anyway. Without `refresh_lifetime` the login still works and the session is
+simply not renewable (the log says "the provider issued no refresh token");
+`--session-renewal-lifetime 0` turns renewal off and asks for `openid` alone.
+
+The store is **bounded** (10000 families; when full the family closest to its end
+is dropped) and **lost on a restart**: everybody signs in again once, as with a
+session-key change. Revoking a person at bridge (account, passkey, application
+session) ends their renewal at the next `RenewSession`; a session token already
+issued stays valid until its own expiry (at most `--session-ttl`).
 
 ## Checking a deployment
 
