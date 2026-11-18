@@ -171,6 +171,19 @@ func TestRelayToExpiredAllocationIsDropped(t *testing.T) {
 		t.Fatalf("B got %q (ok=%v) while its allocation was live", got, ok)
 	}
 
+	// ⛔ B can hold "alive" before the server has COUNTED it: toPeer hands the
+	// datagram to B's client and only then increments PacketsToPeer. Taking
+	// `before` too early folded "alive" into the comparison below, and the test
+	// failed on a slow runner (windows, 2026-11-18, go-turn/turn#22) while the
+	// relay was right: "too late" WAS dropped. Wait for the count to settle.
+	settle := time.Now().Add(2 * time.Second)
+	for e.srv.Stats().PacketsToPeer < 1 {
+		if time.Now().After(settle) {
+			t.Fatalf("the live datagram was never counted: %+v", e.srv.Stats())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	e.clk.Advance(61 * time.Second) // B's allocation is over; A's, and A's permission, are not
 	before := e.srv.Stats()
 	a.sendInd(relB, []byte("too late"))
