@@ -37,8 +37,11 @@ type config struct {
 	Realm                              string
 	STUNURLs, TURNURLs                 []string
 	SessionTTL, CredTTL                time.Duration
-	Limits                             rendezvous.Limits
-	Relay                              relayOptions
+	// RenewalLifetime is how long a login can be renewed (bridge's
+	// refresh_lifetime for this client); zero turns renewal off.
+	RenewalLifetime time.Duration
+	Limits          rendezvous.Limits
+	Relay           relayOptions
 }
 
 // relayConfig is what the TURN relay needs from the HTTP half.
@@ -202,12 +205,22 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 		return nil, fmt.Errorf("issuer discovery: %w", err)
 	}
 	public := strings.TrimRight(cfg.PublicURL, "/")
-	client, err := rp.NewClient(dctx, prov, rp.Config{ClientID: cfg.ClientID, Secret: string(cs), RedirectURI: public + "/callback"})
+	scopes := []string{"openid"}
+	if cfg.RenewalLifetime > 0 {
+		scopes = append(scopes, "offline_access") // a refresh token, kept server side
+	}
+	client, err := rp.NewClient(dctx, prov, rp.Config{ClientID: cfg.ClientID, Secret: string(cs), RedirectURI: public + "/callback", Scopes: scopes})
 	if err != nil {
 		return nil, fmt.Errorf("issuer keys: %w", err)
 	}
+	var renewer *session.Renewer
+	if cfg.RenewalLifetime > 0 {
+		if renewer, err = session.NewRenewer(session.RenewConfig{Refresher: client, Signer: signer, Lifetime: cfg.RenewalLifetime, Logf: logger.Printf}); err != nil {
+			return nil, err
+		}
+	}
 	secure := strings.HasPrefix(public, "https://")
-	login, err := session.NewLogin(session.LoginConfig{Client: client, Signer: signer, Origins: cfg.Origins, Secure: secure, Logf: logger.Printf})
+	login, err := session.NewLogin(session.LoginConfig{Client: client, Signer: signer, Origins: cfg.Origins, Secure: secure, Renewer: renewer, Logf: logger.Printf})
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +232,20 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 			return nil, fmt.Errorf("access-token verifier: %w", err)
 		}
 	}
-	rv, err := rendezvous.New(rendezvous.Config{Auth: auth.Authenticate, Keyring: ring, STUN: cfg.STUNURLs, TURN: cfg.TURNURLs,
+	var renew func(context.Context, string) (string, time.Time, error)
+	if renewer != nil {
+		renew = func(ctx context.Context, tok string) (string, time.Time, error) {
+			t, exp, err := renewer.Renew(ctx, tok)
+			switch {
+			case errors.Is(err, session.ErrEnded):
+				err = rendezvous.ErrSessionEnded
+			case errors.Is(err, session.ErrUnavailable):
+				err = rendezvous.ErrSessionUnavailable
+			}
+			return t, exp, err
+		}
+	}
+	rv, err := rendezvous.New(rendezvous.Config{Auth: auth.Authenticate, Renew: renew, Keyring: ring, STUN: cfg.STUNURLs, TURN: cfg.TURNURLs,
 		Limits: cfg.Limits, CredTTL: cfg.CredTTL})
 	if err != nil {
 		return nil, err

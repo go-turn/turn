@@ -54,7 +54,7 @@ func (a *Auth) Authenticate(ctx context.Context, tok string) (string, error) {
 	if a.Now != nil {
 		now = a.Now
 	}
-	if strings.HasPrefix(tok, prefix) {
+	if isSessionToken(tok) {
 		c, err := a.Signer.Verify(tok, now())
 		if err != nil {
 			a.logf("session token refused: %v", err)

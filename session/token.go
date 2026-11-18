@@ -32,10 +32,27 @@ const (
 	// MaxTokenLen bounds a token Verify reads; anything longer is refused unread.
 	MaxTokenLen = 512
 
-	prefix = "t1."
-	label  = "go-turn/session v1\x00"
-	nonceN = 16
+	prefix  = "t1." // v0.4.0 tokens: no family, cannot be renewed
+	prefix2 = "t2." // payload adds a 16-byte renewal family before the subject
+	label   = "go-turn/session v1\x00"
+	label2  = "go-turn/session v2\x00"
+	nonceN  = 16
+	familyN = 16
 )
+
+// Family names the renewal family of a session: a random identifier under which
+// turnd keeps the identity provider's refresh token server side. It is not a
+// secret of its own (it only means something inside a token turnd signed).
+type Family [familyN]byte
+
+// IsZero says whether f is the absent family of a token that cannot be renewed.
+func (f Family) IsZero() bool { return f == Family{} }
+
+// isSessionToken says whether tok is one of ours, as opposed to an issuer
+// access token.
+func isSessionToken(tok string) bool {
+	return strings.HasPrefix(tok, prefix) || strings.HasPrefix(tok, prefix2)
+}
 
 var (
 	// ErrInvalid is a token that is malformed, signed by no key of ours, or altered.
@@ -49,6 +66,9 @@ type Claims struct {
 	Subject string
 	Expiry  time.Time
 	Nonce   [nonceN]byte
+	// Family is the renewal family; the zero value for a token that predates
+	// renewal or was issued without one.
+	Family Family
 }
 
 // Signer issues and verifies tokens. Issue signs with the first key; Verify
@@ -82,9 +102,11 @@ func NewSigner(ttl time.Duration, current []byte, previous ...[]byte) (*Signer, 
 // TTL is the lifetime of an issued token.
 func (s *Signer) TTL() time.Duration { return s.ttl }
 
-func mac(key, payload []byte) []byte {
+func mac(key, payload []byte) []byte { return macLabel(label, key, payload) }
+
+func macLabel(l string, key, payload []byte) []byte {
 	m := hmac.New(sha256.New, key)
-	m.Write([]byte(label))
+	m.Write([]byte(l))
 	m.Write(payload)
 	return m.Sum(nil)
 }
@@ -119,38 +141,75 @@ func (s *Signer) Issue(subject string, now time.Time) (token string, expiry time
 	return prefix + enc.EncodeToString(payload) + "." + enc.EncodeToString(mac(s.keys[0], payload)), expiry, nil
 }
 
+// IssueRenewable is [Signer.Issue] for a session that can be renewed: the token
+// carries fam, which turnd's renewer maps to the stored refresh token.
+func (s *Signer) IssueRenewable(subject string, fam Family, now time.Time) (token string, expiry time.Time, err error) {
+	if !ValidSubject(subject) || fam.IsZero() {
+		return "", time.Time{}, errors.New("session: bad subject or family")
+	}
+	expiry = now.Add(s.ttl).Truncate(time.Second)
+	payload := make([]byte, 8+nonceN+familyN, 8+nonceN+familyN+len(subject))
+	binary.BigEndian.PutUint64(payload, uint64(expiry.Unix()))
+	if _, err := rand.Read(payload[8 : 8+nonceN]); err != nil {
+		return "", time.Time{}, err
+	}
+	copy(payload[8+nonceN:], fam[:])
+	payload = append(payload, subject...)
+	enc := base64.RawURLEncoding
+	return prefix2 + enc.EncodeToString(payload) + "." + enc.EncodeToString(macLabel(label2, s.keys[0], payload)), expiry, nil
+}
+
 // Verify checks a token. The signature is checked, against every key and in
 // constant time, before anything in the payload is trusted; then the expiry.
 func (s *Signer) Verify(token string, now time.Time) (Claims, error) {
-	if len(token) > MaxTokenLen || !strings.HasPrefix(token, prefix) {
+	return s.VerifyGrace(token, now, 0)
+}
+
+// VerifyGrace is [Signer.Verify] that also accepts a genuine token expired for
+// less than grace. It is for renewal only: every other endpoint uses Verify.
+func (s *Signer) VerifyGrace(token string, now time.Time, grace time.Duration) (Claims, error) {
+	if len(token) > MaxTokenLen {
 		return Claims{}, ErrInvalid
 	}
-	p, m, ok := strings.Cut(token[len(prefix):], ".")
+	var pre, lab string
+	var fixed int
+	switch {
+	case strings.HasPrefix(token, prefix):
+		pre, lab, fixed = prefix, label, 8+nonceN
+	case strings.HasPrefix(token, prefix2):
+		pre, lab, fixed = prefix2, label2, 8+nonceN+familyN
+	default:
+		return Claims{}, ErrInvalid
+	}
+	p, m, ok := strings.Cut(token[len(pre):], ".")
 	if !ok {
 		return Claims{}, ErrInvalid
 	}
 	enc := base64.RawURLEncoding
 	payload, err1 := enc.DecodeString(p)
 	sig, err2 := enc.DecodeString(m)
-	if err1 != nil || err2 != nil || len(sig) != sha256.Size || len(payload) < 8+nonceN+1 {
+	if err1 != nil || err2 != nil || len(sig) != sha256.Size || len(payload) < fixed+1 {
 		return Claims{}, ErrInvalid
 	}
 	good := 0
 	for _, k := range s.keys {
-		good |= subtle.ConstantTimeCompare(sig, mac(k, payload))
+		good |= subtle.ConstantTimeCompare(sig, macLabel(lab, k, payload))
 	}
 	if good != 1 {
 		return Claims{}, ErrInvalid
 	}
 	// The payload is ours now; still re-validate what we parse.
 	sec := binary.BigEndian.Uint64(payload)
-	subject := string(payload[8+nonceN:])
+	subject := string(payload[fixed:])
 	if sec > uint64(1<<62) || !ValidSubject(subject) {
 		return Claims{}, ErrInvalid
 	}
 	c := Claims{Subject: subject, Expiry: time.Unix(int64(sec), 0)}
 	copy(c.Nonce[:], payload[8:8+nonceN])
-	if !c.Expiry.After(now) {
+	if pre == prefix2 {
+		copy(c.Family[:], payload[8+nonceN:fixed])
+	}
+	if !c.Expiry.Add(grace).After(now) {
 		return Claims{}, ErrExpired
 	}
 	return c, nil

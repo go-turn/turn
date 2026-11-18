@@ -38,6 +38,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	Turnd_Credentials_FullMethodName     = "/turn.v1.Turnd/Credentials"
+	Turnd_RenewSession_FullMethodName    = "/turn.v1.Turnd/RenewSession"
 	Turnd_CreateRoom_FullMethodName      = "/turn.v1.Turnd/CreateRoom"
 	Turnd_JoinRoom_FullMethodName        = "/turn.v1.Turnd/JoinRoom"
 	Turnd_Admit_FullMethodName           = "/turn.v1.Turnd/Admit"
@@ -53,6 +54,16 @@ const (
 type TurndClient interface {
 	// Credentials mints TURN credentials for a logged-in person.
 	Credentials(ctx context.Context, in *CredentialsRequest, opts ...grpc.CallOption) (*IceServers, error)
+	// RenewSession trades a session token for a fresh one without another login.
+	// Bearer: a session token still valid or expired for less than the grace
+	// period (5 minutes by default). turnd keeps the identity provider's refresh
+	// token server side and spends it here; the answer carries a new session token
+	// and its expiry. UNAUTHENTICATED ends the matter: the token cannot be renewed
+	// (it predates renewal, its family is unknown or over, it expired beyond the
+	// grace, or the provider refused: the account or its session was revoked), so
+	// the person must sign in again. UNAVAILABLE means the provider could not be
+	// reached: the session is intact, retry. UNIMPLEMENTED: renewal is off.
+	RenewSession(ctx context.Context, in *RenewSessionRequest, opts ...grpc.CallOption) (*RenewSessionResponse, error)
 	// CreateRoom opens a room as its host (session token).
 	CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (*CreateRoomResponse, error)
 	// JoinRoom knocks at a room with its ID (no token). The guest is PENDING: it
@@ -88,6 +99,16 @@ func (c *turndClient) Credentials(ctx context.Context, in *CredentialsRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(IceServers)
 	err := c.cc.Invoke(ctx, Turnd_Credentials_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *turndClient) RenewSession(ctx context.Context, in *RenewSessionRequest, opts ...grpc.CallOption) (*RenewSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenewSessionResponse)
+	err := c.cc.Invoke(ctx, Turnd_RenewSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +194,16 @@ type Turnd_RoomClient = grpc.BidiStreamingClient[Envelope, Envelope]
 type TurndServer interface {
 	// Credentials mints TURN credentials for a logged-in person.
 	Credentials(context.Context, *CredentialsRequest) (*IceServers, error)
+	// RenewSession trades a session token for a fresh one without another login.
+	// Bearer: a session token still valid or expired for less than the grace
+	// period (5 minutes by default). turnd keeps the identity provider's refresh
+	// token server side and spends it here; the answer carries a new session token
+	// and its expiry. UNAUTHENTICATED ends the matter: the token cannot be renewed
+	// (it predates renewal, its family is unknown or over, it expired beyond the
+	// grace, or the provider refused: the account or its session was revoked), so
+	// the person must sign in again. UNAVAILABLE means the provider could not be
+	// reached: the session is intact, retry. UNIMPLEMENTED: renewal is off.
+	RenewSession(context.Context, *RenewSessionRequest) (*RenewSessionResponse, error)
 	// CreateRoom opens a room as its host (session token).
 	CreateRoom(context.Context, *CreateRoomRequest) (*CreateRoomResponse, error)
 	// JoinRoom knocks at a room with its ID (no token). The guest is PENDING: it
@@ -206,6 +237,9 @@ type UnimplementedTurndServer struct{}
 
 func (UnimplementedTurndServer) Credentials(context.Context, *CredentialsRequest) (*IceServers, error) {
 	return nil, status.Error(codes.Unimplemented, "method Credentials not implemented")
+}
+func (UnimplementedTurndServer) RenewSession(context.Context, *RenewSessionRequest) (*RenewSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RenewSession not implemented")
 }
 func (UnimplementedTurndServer) CreateRoom(context.Context, *CreateRoomRequest) (*CreateRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateRoom not implemented")
@@ -263,6 +297,24 @@ func _Turnd_Credentials_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TurndServer).Credentials(ctx, req.(*CredentialsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Turnd_RenewSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TurndServer).RenewSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Turnd_RenewSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TurndServer).RenewSession(ctx, req.(*RenewSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -392,6 +444,10 @@ var Turnd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Credentials",
 			Handler:    _Turnd_Credentials_Handler,
+		},
+		{
+			MethodName: "RenewSession",
+			Handler:    _Turnd_RenewSession_Handler,
 		},
 		{
 			MethodName: "CreateRoom",

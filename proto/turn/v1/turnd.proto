@@ -25,6 +25,17 @@ service Turnd {
   // Credentials mints TURN credentials for a logged-in person.
   rpc Credentials(CredentialsRequest) returns (IceServers);
 
+  // RenewSession trades a session token for a fresh one without another login.
+  // Bearer: a session token still valid or expired for less than the grace
+  // period (5 minutes by default). turnd keeps the identity provider's refresh
+  // token server side and spends it here; the answer carries a new session token
+  // and its expiry. UNAUTHENTICATED ends the matter: the token cannot be renewed
+  // (it predates renewal, its family is unknown or over, it expired beyond the
+  // grace, or the provider refused: the account or its session was revoked), so
+  // the person must sign in again. UNAVAILABLE means the provider could not be
+  // reached: the session is intact, retry. UNIMPLEMENTED: renewal is off.
+  rpc RenewSession(RenewSessionRequest) returns (RenewSessionResponse);
+
   // CreateRoom opens a room as its host (session token).
   rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
 
@@ -54,6 +65,13 @@ service Turnd {
 }
 
 message CredentialsRequest {}
+
+message RenewSessionRequest {}
+
+message RenewSessionResponse {
+  string token = 1; // the new session token
+  int64 expires = 2; // Unix seconds
+}
 
 message CreateRoomRequest {}
 
