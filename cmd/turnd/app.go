@@ -207,7 +207,7 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 		return nil, fmt.Errorf("issuer keys: %w", err)
 	}
 	secure := strings.HasPrefix(public, "https://")
-	login, err := session.NewLogin(session.LoginConfig{Client: client, Signer: signer, Origins: cfg.Origins, Secure: secure})
+	login, err := session.NewLogin(session.LoginConfig{Client: client, Signer: signer, Origins: cfg.Origins, Secure: secure, Logf: logger.Printf})
 	if err != nil {
 		return nil, err
 	}

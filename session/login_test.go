@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +30,25 @@ type env struct {
 	srv    *httptest.Server
 	signer *session.Signer
 	login  *session.Login
+	logs   *logLines
+}
+
+// logLines collects what the login logs.
+type logLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logLines) logf(format string, args ...any) {
+	l.mu.Lock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	l.mu.Unlock()
+}
+
+func (l *logLines) all() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
 }
 
 func setup(t *testing.T, maxFlows int) *env {
@@ -46,14 +67,62 @@ func setup(t *testing.T, maxFlows int) *env {
 		t.Fatal(err)
 	}
 	signer, _ := session.NewSigner(time.Hour, key)
-	l, err := session.NewLogin(session.LoginConfig{Client: c, Signer: signer, Origins: []string{allowed, "http://localhost:8080"}, MaxFlows: maxFlows})
+	logs := &logLines{}
+	l, err := session.NewLogin(session.LoginConfig{Client: c, Signer: signer, Origins: []string{allowed, "http://localhost:8080"}, MaxFlows: maxFlows, Logf: logs.logf})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
 	l.Mount(mux)
 	h = mux
-	return &env{idp, srv, signer, l}
+	return &env{idp, srv, signer, l, logs}
+}
+
+// TestLoginLogsOutcomes: the popup shows "You can close this window" whether
+// the login worked or not when it has no opener, so the log is the only place
+// an operator can tell them apart (2026-11-18, mésocentre: a real login left
+// turnd's journal empty). It names the outcome and the pseudonymous subject,
+// never the token, and the provider's error text cannot forge a line.
+func TestLoginLogsOutcomes(t *testing.T) {
+	e := setup(t, 0)
+	r := do(t, e.browser(true), e.srv.URL+"/login?origin="+url.QueryEscape(allowed))
+	if r.msg["type"] != "turnd-session" {
+		t.Fatalf("setup: %v", r.msg)
+	}
+	got := e.logs.all()
+	want := "login: session issued to " + session.Subject(e.idp.Issuer, "alice-sub") + " for origin " + allowed
+	if !strings.Contains(got, want) {
+		t.Fatalf("success not logged as %q:\n%s", want, got)
+	}
+	if tok := r.msg["token"].(string); strings.Contains(got, tok) || strings.Contains(got, "alice-sub") {
+		t.Fatalf("the log carries the token or the raw subject:\n%s", got)
+	}
+
+	// A code exchange that fails says so.
+	e2 := setup(t, 0)
+	e2.idp.BadNonce = true
+	do(t, e2.browser(true), e2.srv.URL+"/login?origin="+url.QueryEscape(allowed))
+	if got := e2.logs.all(); !strings.Contains(got, "login refused: code exchange") || strings.Contains(got, "session issued") {
+		t.Fatalf("exchange failure:\n%s", got)
+	}
+
+	// A provider error is quoted: a newline in it does not start a line.
+	e3 := setup(t, 0)
+	a := e3.browser(false)
+	l := do(t, a, e3.srv.URL+"/login?origin="+url.QueryEscape(allowed))
+	u, _ := url.Parse(l.hdr.Get("Location"))
+	forged := "access_denied\nturnd: login: session issued to uFORGED"
+	do(t, a, e3.srv.URL+"/callback?error="+url.QueryEscape(forged)+"&state="+url.QueryEscape(u.Query().Get("state")))
+	got = e3.logs.all()
+	if strings.Contains(got, "\nturnd: login: session issued") || !strings.Contains(got, `login refused by the provider: "access_denied\n`) {
+		t.Fatalf("provider error not quoted:\n%s", got)
+	}
+
+	// An unknown flow is logged as a refusal.
+	do(t, e3.browser(false), e3.srv.URL+"/callback?state=nope&code=x")
+	if got := e3.logs.all(); !strings.Contains(got, "login refused: unknown or expired flow") {
+		t.Fatalf("unknown flow:\n%s", got)
+	}
 }
 
 // browser is an HTTP client with a cookie jar that follows redirects (to the
