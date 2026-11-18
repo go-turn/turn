@@ -110,7 +110,7 @@ func TestHandshakeWithAdmission(t *testing.T) {
 		t.Fatal("Join did not return after the admission")
 	}
 	defer guest.Close(c)
-	if host.Peer != "host" || guest.Host != "host" || guest.Peer == "host" || host.Expires.Before(time.Now()) {
+	if host.Peer == "host" || guest.Host != host.Peer || host.HostPeer() != host.Peer || !host.IsHost() || guest.IsHost() || guest.Peer == "host" || host.Expires.Before(time.Now()) {
 		t.Fatalf("%+v %+v", host, guest)
 	}
 	if e, err := host.Recv(c); err != nil || e.Kind != "sys.join" || e.From != guest.Peer {
@@ -119,7 +119,7 @@ func TestHandshakeWithAdmission(t *testing.T) {
 	if err := host.Send(c, guest.Peer, "offer", []byte("sdp-offer")); err != nil {
 		t.Fatal(err)
 	}
-	if e, err := guest.Recv(c); err != nil || e.Kind != "offer" || string(e.Body) != "sdp-offer" || e.From != "host" {
+	if e, err := guest.Recv(c); err != nil || e.Kind != "offer" || string(e.Body) != "sdp-offer" || e.From != host.Peer {
 		t.Fatalf("%v %v", e, err)
 	}
 	if err := guest.Send(c, "host", "answer", []byte("sdp-answer")); err != nil {

@@ -18,6 +18,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +44,7 @@ var ErrClosed = errors.New("rendezvous: room closed")
 var ErrDenied = errors.New("rendezvous: the host denied entry")
 
 // Event is a message or a system event ("sys.knock", "sys.join", "sys.leave",
-// "sys.admitted", "sys.denied", "sys.closed").
+// "sys.admitted", "sys.denied", "sys.closed", "sys.host-changed").
 type Event struct {
 	Seq  uint64
 	From string
@@ -184,12 +185,41 @@ func KeepRenewed(ctx context.Context, cur Session, lead time.Duration, renew fun
 	}
 }
 
+// HostChange reads a "sys.host-changed" event: the host role moved from one
+// peer to another (peer IDs do not change). ok is false for any other event.
+func (e Event) HostChange() (from, to string, ok bool) {
+	if e.Kind != "sys.host-changed" {
+		return "", "", false
+	}
+	var h struct{ From, To string }
+	if json.Unmarshal(e.Body, &h) != nil || h.To == "" {
+		return "", "", false
+	}
+	return h.From, h.To, true
+}
+
+// CoHost reads a "sys.cohost-added" or "sys.cohost-removed" event: peer is the
+// one whose co-host powers began or ended. ok is false for any other event.
+func (e Event) CoHost() (peer string, added, ok bool) {
+	if e.Kind != "sys.cohost-added" && e.Kind != "sys.cohost-removed" {
+		return "", false, false
+	}
+	var b struct{ Peer string }
+	if json.Unmarshal(e.Body, &b) != nil || b.Peer == "" {
+		return "", false, false
+	}
+	return b.Peer, e.Kind == "sys.cohost-added", true
+}
+
 // Room is a peer's membership of a room.
 type Room struct {
 	ID      string
 	Peer    string
-	Host    string // the host's peer ID, "host"
+	Host    string // the host's peer ID when the room was entered (a real ID, never "host"): see HostPeer
 	Expires time.Time
+
+	host   string // the current host's peer ID; guarded by mu
+	cohost bool   // this peer is a co-host; guarded by mu
 
 	cc     *grpc.ClientConn
 	ownsCC bool
@@ -207,12 +237,12 @@ type Room struct {
 }
 
 // Create opens a room as its host and starts receiving its events.
-func Create(ctx context.Context, base, sessionToken string) (*Room, error) {
+func Create(ctx context.Context, base, sessionToken string, opts ...CreateOption) (*Room, error) {
 	cc, err := Dial(base, wstransport.ClientConfig{})
 	if err != nil {
 		return nil, err
 	}
-	r, err := CreateConn(ctx, cc, sessionToken)
+	r, err := CreateConn(ctx, cc, sessionToken, opts...)
 	if err != nil {
 		cc.Close()
 		return nil, err
@@ -222,23 +252,49 @@ func Create(ctx context.Context, base, sessionToken string) (*Room, error) {
 }
 
 // CreateConn is [Create] over an existing connection, which the caller closes.
-func CreateConn(ctx context.Context, cc *grpc.ClientConn, sessionToken string) (*Room, error) {
+func CreateConn(ctx context.Context, cc *grpc.ClientConn, sessionToken string, opts ...CreateOption) (*Room, error) {
+	var o createOpts
+	for _, f := range opts {
+		f(&o)
+	}
 	rpc := turnv1.NewTurndClient(cc)
-	resp, err := rpc.CreateRoom(withToken(ctx, sessionToken), &turnv1.CreateRoomRequest{})
+	resp, err := rpc.CreateRoom(withToken(ctx, sessionToken), &turnv1.CreateRoomRequest{MaxGuests: int32(o.maxGuests)})
 	if err != nil {
 		return nil, err
 	}
-	return open(cc, rpc, resp.GetRoom(), resp.GetPeer(), "host", resp.GetToken(), resp.GetExpires())
+	return open(cc, rpc, resp.GetRoom(), resp.GetPeer(), resp.GetPeer(), resp.GetToken(), resp.GetExpires())
 }
+
+// CreateOption adjusts [Create].
+type CreateOption func(*createOpts)
+
+type createOpts struct{ maxGuests int }
+
+// WithMaxGuests asks for a room that admits n guests AT ONCE (a guest that
+// leaves frees its place); the default is 8, the server refuses more than its
+// own ceiling with InvalidArgument.
+func WithMaxGuests(n int) CreateOption { return func(o *createOpts) { o.maxGuests = n } }
+
+// JoinOption adjusts [Join].
+type JoinOption func(*joinOpts)
+
+type joinOpts struct{ session string }
+
+// WithSession says who the guest is: a session (or access) token, sent as
+// metadata with the knock and checked by turnd. A guest that is signed in and
+// becomes the host after a handover has the TURN credentials it hands out
+// charged to it and not to the person who opened the room. A token that does
+// not verify makes Join fail (Unauthenticated).
+func WithSession(token string) JoinOption { return func(o *joinOpts) { o.session = token } }
 
 // Join knocks at a room with its ID and a display name, and blocks until the
 // host admits the guest (see the package comment).
-func Join(ctx context.Context, base, roomID, name string) (*Room, error) {
+func Join(ctx context.Context, base, roomID, name string, opts ...JoinOption) (*Room, error) {
 	cc, err := Dial(base, wstransport.ClientConfig{})
 	if err != nil {
 		return nil, err
 	}
-	r, err := JoinConn(ctx, cc, roomID, name)
+	r, err := JoinConn(ctx, cc, roomID, name, opts...)
 	if err != nil {
 		cc.Close()
 		return nil, err
@@ -248,12 +304,20 @@ func Join(ctx context.Context, base, roomID, name string) (*Room, error) {
 }
 
 // JoinConn is [Join] over an existing connection, which the caller closes.
-func JoinConn(ctx context.Context, cc *grpc.ClientConn, roomID, name string) (*Room, error) {
+func JoinConn(ctx context.Context, cc *grpc.ClientConn, roomID, name string, opts ...JoinOption) (*Room, error) {
 	if !validID(roomID) {
 		return nil, errors.New("rendezvous: malformed room ID")
 	}
+	var o joinOpts
+	for _, f := range opts {
+		f(&o)
+	}
 	rpc := turnv1.NewTurndClient(cc)
-	resp, err := rpc.JoinRoom(ctx, &turnv1.JoinRoomRequest{Room: roomID, Name: name})
+	jctx := ctx
+	if o.session != "" {
+		jctx = metadata.AppendToOutgoingContext(ctx, "x-turn-session", o.session)
+	}
+	resp, err := rpc.JoinRoom(jctx, &turnv1.JoinRoomRequest{Room: roomID, Name: name})
 	if err != nil {
 		return nil, err
 	}
@@ -292,6 +356,39 @@ func JoinConn(ctx context.Context, cc *grpc.ClientConn, roomID, name string) (*R
 	}
 }
 
+// Reclaim is how a person who was the host comes back (a reload, a new
+// network, a crash), with a session token: while the grace period lasts, or
+// while no one else has been promoted, they are the host again, with a new
+// token; after a handover they are an admitted guest of the new host, with the
+// peer ID they had. [Room.IsHost] tells which. Unauthenticated: the token is
+// not a session; PermissionDenied: this person was never the host of the room.
+func Reclaim(ctx context.Context, base, roomID, sessionToken string) (*Room, error) {
+	cc, err := Dial(base, wstransport.ClientConfig{})
+	if err != nil {
+		return nil, err
+	}
+	r, err := ReclaimConn(ctx, cc, roomID, sessionToken)
+	if err != nil {
+		cc.Close()
+		return nil, err
+	}
+	r.ownsCC = true
+	return r, nil
+}
+
+// ReclaimConn is [Reclaim] over an existing connection, which the caller closes.
+func ReclaimConn(ctx context.Context, cc *grpc.ClientConn, roomID, sessionToken string) (*Room, error) {
+	if !validID(roomID) {
+		return nil, errors.New("rendezvous: malformed room ID")
+	}
+	rpc := turnv1.NewTurndClient(cc)
+	resp, err := rpc.Reclaim(withToken(ctx, sessionToken), &turnv1.ReclaimRequest{Room: roomID})
+	if err != nil {
+		return nil, err
+	}
+	return open(cc, rpc, resp.GetRoom(), resp.GetPeer(), resp.GetHostPeer(), resp.GetToken(), resp.GetExpires())
+}
+
 func validID(id string) bool {
 	if len(id) != 32 {
 		return false
@@ -312,7 +409,7 @@ func open(cc *grpc.ClientConn, rpc turnv1.TurndClient, room, peer, host, token s
 		cancel()
 		return nil, err
 	}
-	r := &Room{ID: room, Peer: peer, Host: host, Expires: time.Unix(expires, 0), cc: cc, rpc: rpc, token: token,
+	r := &Room{ID: room, Peer: peer, Host: host, host: host, Expires: time.Unix(expires, 0), cc: cc, rpc: rpc, token: token,
 		stream: stream, cancel: cancel, events: make(chan Event, 64), done: make(chan struct{})}
 	go r.pump()
 	return r, nil
@@ -329,6 +426,21 @@ func (r *Room) pump() {
 			return
 		}
 		ev := Event{Seq: e.GetSeq(), From: e.GetFrom(), To: e.GetTo(), Kind: e.GetKind(), Body: e.GetBody()}
+		if _, to, ok := ev.HostChange(); ok {
+			r.mu.Lock()
+			r.host = to // before the event reaches the caller: IsHost is right when it reads it
+			r.mu.Unlock()
+		}
+		if p, added, ok := ev.CoHost(); ok && p == r.Peer {
+			r.mu.Lock()
+			r.cohost = added
+			r.mu.Unlock()
+		}
+		if _, to, ok := ev.HostChange(); ok && to == r.Peer {
+			r.mu.Lock()
+			r.cohost = false // the host's powers contain a co-host's
+			r.mu.Unlock()
+		}
 		select {
 		case r.events <- ev:
 		case <-r.stream.Context().Done():
@@ -353,7 +465,9 @@ func (r *Room) finish(err error) {
 
 func (r *Room) auth(ctx context.Context) context.Context { return withToken(ctx, r.token) }
 
-// Send sends a message to a peer ("host" from a guest; a guest's peer ID from
+// Send sends a message to a peer: "host" is the alias of the current host (for
+// everyone but the host, which would be addressing itself: the server answers
+// with a sys.error InvalidArgument), or a real peer ID (a guest's, from
 // the host). A message the server refuses ends the stream: see Recv.
 func (r *Room) Send(ctx context.Context, to, kind string, body []byte) error {
 	r.sendMu.Lock()
@@ -412,6 +526,53 @@ func (r *Room) Deny(ctx context.Context, peer string) error {
 	return err
 }
 
+// IsHost reports whether this peer is the room's host now: true for the one
+// that created it, and for a guest from the moment it receives the
+// "sys.host-changed" that names it (it then has the powers of the host: Admit,
+// Deny, Close, Credentials for the others).
+func (r *Room) IsHost() bool { return r.HostPeer() == r.Peer }
+
+// HostPeer is the REAL peer ID of the host: the one the server gave when the
+// room was created, joined or reclaimed, then the "to" of the last
+// "sys.host-changed" this room has read. "host" as the destination of Send is
+// an alias that always lands on it.
+func (r *Room) HostPeer() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.host
+}
+
+// IsCoHost reports whether this peer is a co-host now (appointed by the host:
+// it may Admit, Deny and Close, and hears the knocks too), as of the last
+// "sys.cohost-added" or "sys.cohost-removed" this room has read.
+func (r *Room) IsCoHost() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cohost
+}
+
+// AppointCoHost lets an admitted guest admit, deny and close beside the host;
+// RevokeCoHost takes it back at once (host only). There is still one host.
+func (r *Room) AppointCoHost(ctx context.Context, peer string) error {
+	_, err := r.rpc.AppointCoHost(r.auth(ctx), &turnv1.CoHostRequest{Room: r.ID, Peer: peer})
+	return err
+}
+
+// RevokeCoHost: see [Room.AppointCoHost].
+func (r *Room) RevokeCoHost(ctx context.Context, peer string) error {
+	_, err := r.rpc.RevokeCoHost(r.auth(ctx), &turnv1.CoHostRequest{Room: r.ID, Peer: peer})
+	return err
+}
+
+// HandOver gives the host role to an admitted guest that is connected (host
+// only). This peer stops being the host: its token is dead, its stream ends
+// after the "sys.host-changed" that tells everyone, and [Reclaim] brings the
+// person back as a guest.
+func (r *Room) HandOver(ctx context.Context, to string) error {
+	_, err := r.rpc.HandOver(r.auth(ctx), &turnv1.HandOverRequest{Room: r.ID, To: to})
+	return err
+}
+
 // Credentials asks for TURN credentials that expire with the room (admitted
 // peers only).
 func (r *Room) Credentials(ctx context.Context) (creds.Response, error) {
@@ -422,14 +583,31 @@ func (r *Room) Credentials(ctx context.Context) (creds.Response, error) {
 	return toCreds(resp), nil
 }
 
+// CloseRoom ends the room for everyone (host or co-host).
+func (r *Room) CloseRoom(ctx context.Context) error {
+	_, err := r.rpc.CloseRoom(r.auth(ctx), &turnv1.RoomRef{Room: r.ID})
+	return err
+}
+
 // Close leaves the room (the host's leaving closes it) and releases the
 // connection if the room dialed it.
 func (r *Room) Close(ctx context.Context) error {
 	var err error
-	if r.Peer == "host" {
+	if r.IsHost() { // a co-host's Close only leaves; it ends the room with CloseRoom
 		_, err = r.rpc.CloseRoom(r.auth(ctx), &turnv1.RoomRef{Room: r.ID})
 	}
-	r.cancel() // ending the stream is leaving
+	// A half-close says goodbye (the server frees the place and tells the host at
+	// once); a bare cancel looks like a dropped connection, which the server keeps
+	// for a grace period so that the guest can resume.
+	r.sendMu.Lock()
+	_ = r.stream.CloseSend()
+	r.sendMu.Unlock()
+	select {
+	case <-r.done:
+	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
+	}
+	r.cancel()
 	if r.ownsCC {
 		_ = r.cc.Close()
 	}

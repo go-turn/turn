@@ -6,6 +6,11 @@
 // and guest to host. An admitted peer can get TURN credentials that expire with
 // the room, charged to the host's subject.
 //
+// The room outlives its host: when the host's stream ends it waits
+// [Limits.HostGrace] for the same person to come back ([Server.Reclaim]), then
+// promotes the earliest-admitted guest still connected, or does as the host says
+// ([Server.HandOver]). Peer IDs never change; everyone gets sys.host-changed.
+//
 // A leaked room link therefore lets a stranger knock, not enter: a pending guest
 // can receive and nothing else, it cannot send and it cannot spend the host's
 // TURN quota.
@@ -23,11 +28,14 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -40,11 +48,27 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// HostID is the peer ID of a room's host.
-const HostID = "host"
+// HostAlias is an ADDRESS, never a peer ID: as the "to" of a message it means
+// the room's current active host, resolved the same way for every sender. No
+// peer is named "host" (the room's creator gets an ordinary ID, "g1", like
+// every other peer), and "from" is always a real peer ID. The host addressing
+// the alias gets a sys.error (InvalidArgument): it would be itself.
+//
+// Breaking, v0.7: up to v0.6 the creator was the peer "host".
+const HostAlias = "host"
 
 // RoomMetadata is the metadata key naming the room on the Room stream.
 const RoomMetadata = "x-turn-room"
+
+// defaultRoomGuests is the guests at once of a room that does not ask: a
+// peer-to-peer star of this size is what has been shown to work; what it can
+// carry is the host's uplink, to be measured.
+const defaultRoomGuests = 8
+
+// SessionMetadata is the optional metadata key of JoinRoom (and Reclaim's
+// bearer is the same kind of token) carrying a session or access token: who
+// the guest is, for the day it becomes the host.
+const SessionMetadata = "x-turn-session"
 
 // MaxNameLen bounds a guest's display name, in characters.
 const MaxNameLen = 64
@@ -57,8 +81,19 @@ type Limits struct {
 	MaxMessageBytes int
 	// MaxQueue bounds the events waiting for one peer (default 64).
 	MaxQueue int
-	// MaxGuests bounds the guests ever ADMITTED to one room (default 8).
+	// MaxGuests is the CEILING of the guests ADMITTED AT ONCE in one room
+	// (default 8); a guest that leaves, is denied or whose absence expires frees
+	// its place. A room asks for less with CreateRoomRequest.max_guests (default
+	// 8 or this ceiling if lower). The real limit of a star is the host's uplink.
 	MaxGuests int
+	// MaxAdmissions bounds the admissions in the whole life of one room, so that
+	// freeing places cannot be turned into endless churn (default 4 x MaxGuests).
+	MaxAdmissions int
+	// GuestGrace is how long an admitted guest whose stream DROPPED (cancelled or
+	// broken; a half-close is an explicit leave) keeps its place, peer ID and
+	// token to resume with the same token (default 30 seconds). Negative: a
+	// dropped stream is a departure at once.
+	GuestGrace time.Duration
 	// MaxPending bounds the guests waiting for the host's decision in one room
 	// (default 8); PendingTTL is how long one may wait (default 2 minutes).
 	MaxPending int
@@ -71,6 +106,12 @@ type Limits struct {
 	RoomTTL time.Duration
 	// MaxCredsPerRoom bounds the credential requests of one room (default 64).
 	MaxCredsPerRoom int
+	// HostGrace is how long a room outlives its host's stream (default 2
+	// minutes): the host that comes back as the same person within it keeps the
+	// role, after it the earliest-admitted connected guest is promoted (see
+	// [Server.HandOver]). Negative turns this off: the host's stream ending then
+	// closes the room, as it did before v0.7.
+	HostGrace time.Duration
 }
 
 func (l *Limits) defaults() {
@@ -82,10 +123,17 @@ func (l *Limits) defaults() {
 	def(&l.MaxMessageBytes, 16<<10)
 	def(&l.MaxQueue, 64)
 	def(&l.MaxGuests, 8)
+	def(&l.MaxAdmissions, 4*l.MaxGuests)
+	if l.GuestGrace == 0 {
+		l.GuestGrace = 30 * time.Second
+	}
 	def(&l.MaxPending, 8)
 	def(&l.MaxRoomsPerSubject, 4)
 	def(&l.MaxRooms, 1024)
 	def(&l.MaxCredsPerRoom, 64)
+	if l.HostGrace == 0 {
+		l.HostGrace = 2 * time.Minute
+	}
 	if l.PendingTTL <= 0 {
 		l.PendingTTL = 2 * time.Minute
 	}
@@ -123,12 +171,41 @@ type Config struct {
 type Observer interface {
 	// Event reports one RPC. action is one of "credentials_host",
 	// "credentials_room", "create_room", "knock", "admit", "deny",
-	// "close_room", "renew_session" or "stream"; outcome is "ok" or the lower-case gRPC code
+	// "close_room", "hand_over", "appoint_cohost", "revoke_cohost", "reclaim", "renew_session" or "stream", plus two
+	// that no RPC carries: "host_lost" (a host's stream ended, the grace period
+	// starts) and "promote" (the grace period ended: "ok" when a guest took the
+	// role, "failed_precondition" when none could and the room closed; an
+	// explicit hand over is "hand_over"); outcome is "ok" or the lower-case gRPC code
 	// name of the refusal ("unauthenticated", "not_found", "resource_exhausted",
 	// "permission_denied", "failed_precondition", "invalid_argument",
 	// "unavailable", "already_exists"...). ctx is the RPC's context, so an
 	// implementation can annotate the span in it.
+	// The ctx of the two room-state actions is context.Background(). Event may
+	// be called while no server lock is held, but must not block for long.
 	Event(ctx context.Context, action, outcome string)
+}
+
+type note struct{ action, outcome string }
+
+// noteLocked records what happened with no RPC to carry it (the grace period
+// ran out, a timer fired); seen flushes it, outside the lock.
+func (s *Server) noteLocked(action, outcome string) {
+	if s.cfg.Observer != nil {
+		s.notes = append(s.notes, note{action, outcome})
+	}
+}
+
+func (s *Server) flushNotes(ctx context.Context) {
+	if s.cfg.Observer == nil {
+		return
+	}
+	s.mu.Lock()
+	ns := s.notes
+	s.notes = nil
+	s.mu.Unlock()
+	for _, n := range ns {
+		s.cfg.Observer.Event(context.Background(), n.action, n.outcome)
+	}
 }
 
 // Counts is the live state, for gauges.
@@ -144,11 +221,11 @@ func (s *Server) Counts() Counts {
 	defer s.mu.Unlock()
 	c := Counts{Rooms: len(s.rooms)}
 	for _, rm := range s.rooms {
-		for id, p := range rm.peers {
+		for _, p := range rm.peers {
 			switch {
 			case p.pending:
 				c.Pending++
-			case id != HostID:
+			case p != rm.host:
 				c.Guests++
 			}
 		}
@@ -160,6 +237,7 @@ func (s *Server) seen(ctx context.Context, action string, err error) {
 	if s.cfg.Observer == nil {
 		return
 	}
+	s.flushNotes(ctx)
 	out := "ok"
 	if err != nil {
 		out = snake(status.Code(err).String())
@@ -190,30 +268,45 @@ type Server struct {
 
 	mu    sync.Mutex
 	rooms map[string]*room
+	notes []note
 }
 
 type room struct {
-	id       string
-	subject  string
-	expires  time.Time
-	closed   chan struct{}
-	isClosed bool
-	peers    map[string]*peer
-	admitted int // guests ever admitted
-	nextID   int // peer IDs handed out
-	creds    int
-	seq      uint64
+	id         string
+	subject    string // who opened the room: the TTL's and, without a better one, the credentials' owner
+	expires    time.Time
+	closed     chan struct{}
+	isClosed   bool
+	peers      map[string]*peer
+	admissions int // admissions in the room's whole life (MaxAdmissions)
+	maxGuests  int // admitted guests at once (CreateRoom's, under the server's ceiling)
+	nextID     int // peer IDs handed out
+	creds      int
+	seq        uint64
+
+	host     *peer            // the one host: always in peers
+	hostGone time.Time        // when its stream ended; zero while it is there
+	timer    *time.Timer      // fires the end of the grace period
+	former   map[string]*peer // hosts that were handed over, by peer ID: they may come back as guests
+	ranks    int              // admission order: the lower, the earlier
+	cranks   int              // co-host appointment order
 }
 
 type peer struct {
 	id        string
 	token     string
 	name      string
-	pending   bool // knocked, not yet admitted
+	subject   string // who this peer is, when it presented a session: "" otherwise
+	rank      int    // order of (re)admission; the host's is 0
+	cohost    bool   // appointed by the host: may admit, deny, close; cohostRank is the order of appointment
+	cohostRnk int
+	lost      time.Time // its stream dropped at this time and it may resume; zero otherwise
+	pending   bool      // knocked, not yet admitted
 	since     time.Time
 	queue     []*turnv1.Envelope
 	notify    chan struct{}
 	done      chan struct{} // closed when the peer is removed: its stream drains and ends
+	stopped   bool
 	streaming bool
 }
 
@@ -241,8 +334,15 @@ func (s *Server) MaxRecvMsgSize() int { return s.cfg.Limits.MaxMessageBytes + 10
 
 func (s *Server) now() time.Time { return s.cfg.Now() }
 
-// Sweep closes the rooms whose time is over and drops the guests whose wait is.
+// Sweep closes the rooms whose time is over, drops the guests whose wait is, and
+// ends the host grace periods that are over (a timer does too, so the interval
+// of Run is not what bounds a wait).
 func (s *Server) Sweep() {
+	s.sweep()
+	s.flushNotes(context.Background())
+}
+
+func (s *Server) sweep() {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,13 +352,19 @@ func (s *Server) Sweep() {
 			delete(s.rooms, id)
 			continue
 		}
-		s.expirePendingLocked(r, now)
+		s.settleLocked(r, now)
+		if !r.isClosed {
+			s.expirePendingLocked(r, now)
+		}
 	}
 }
 
 func (s *Server) closeLocked(r *room) {
 	if !r.isClosed {
 		r.isClosed = true
+		if r.timer != nil {
+			r.timer.Stop()
+		}
 		close(r.closed)
 	}
 }
@@ -378,11 +484,18 @@ func newPeer(id string) *peer {
 }
 
 // CreateRoom implements turn.v1.Turnd.
-func (s *Server) CreateRoom(ctx context.Context, _ *turnv1.CreateRoomRequest) (_ *turnv1.CreateRoomResponse, err error) {
+func (s *Server) CreateRoom(ctx context.Context, req *turnv1.CreateRoomRequest) (_ *turnv1.CreateRoomResponse, err error) {
 	defer func() { s.seen(ctx, "create_room", err) }()
 	sub, err := s.subject(ctx)
 	if err != nil {
 		return nil, err
+	}
+	maxGuests := int(req.GetMaxGuests())
+	switch {
+	case maxGuests < 0 || maxGuests > s.cfg.Limits.MaxGuests:
+		return nil, status.Error(codes.InvalidArgument, "max_guests is out of range: this server allows 1 to "+strconv.Itoa(s.cfg.Limits.MaxGuests))
+	case maxGuests == 0:
+		maxGuests = min(defaultRoomGuests, s.cfg.Limits.MaxGuests)
 	}
 	now := s.now()
 	s.mu.Lock()
@@ -406,11 +519,14 @@ func (s *Server) CreateRoom(ctx context.Context, _ *turnv1.CreateRoomRequest) (_
 		return nil, status.Error(codes.ResourceExhausted, "too many rooms")
 	}
 	rm := &room{id: randHex(16), subject: sub, expires: now.Add(s.cfg.Limits.RoomTTL).Truncate(time.Second),
-		closed: make(chan struct{}), peers: map[string]*peer{}}
-	host := newPeer(HostID)
-	rm.peers[HostID] = host
+		closed: make(chan struct{}), peers: map[string]*peer{}, former: map[string]*peer{}, maxGuests: maxGuests}
+	rm.nextID++
+	host := newPeer("g" + strconv.Itoa(rm.nextID)) // an ordinary ID: the host is a role, not a name
+	host.name, host.subject = "host", sub
+	rm.peers[host.id] = host
+	rm.host = host
 	s.rooms[rm.id] = rm
-	return &turnv1.CreateRoomResponse{Room: rm.id, Peer: HostID, Token: host.token, Expires: rm.expires.Unix()}, nil
+	return &turnv1.CreateRoomResponse{Room: rm.id, Peer: host.id, Token: host.token, Expires: rm.expires.Unix(), MaxGuests: int32(maxGuests)}, nil
 }
 
 func validRoomID(id string) bool {
@@ -439,6 +555,10 @@ func (s *Server) roomLocked(id string) *room {
 	if !rm.expires.After(now) {
 		s.closeLocked(rm)
 		delete(s.rooms, id)
+		return nil
+	}
+	s.settleLocked(rm, now)
+	if rm.isClosed {
 		return nil
 	}
 	s.expirePendingLocked(rm, now)
@@ -488,15 +608,22 @@ func (rm *room) removeLocked(p *peer, final *turnv1.Envelope) {
 		rm.push(p, final, 0, true)
 	}
 	delete(rm.peers, p.id)
-	close(p.done)
+	p.stop()
+}
+
+func (p *peer) stop() {
+	if !p.stopped {
+		p.stopped = true
+		close(p.done)
+	}
 }
 
 // expirePendingLocked removes guests that waited longer than the pending TTL.
 func (s *Server) expirePendingLocked(rm *room, now time.Time) {
 	for _, p := range rm.peers {
 		if p.pending && !p.since.Add(s.cfg.Limits.PendingTTL).After(now) {
-			rm.removeLocked(p, sys(HostID, p.id, "sys.denied", "expired"))
-			rm.push(rm.peers[HostID], sys(p.id, HostID, "sys.leave", "expired"), 0, true)
+			rm.removeLocked(p, sys(rm.host.id, p.id, "sys.denied", "expired"))
+			rm.tellHostsLocked(p, "sys.leave", "expired")
 		}
 	}
 }
@@ -507,6 +634,19 @@ func (s *Server) JoinRoom(ctx context.Context, req *turnv1.JoinRoomRequest) (_ *
 	name, ok := cleanName(req.GetName())
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "bad name")
+	}
+	// A guest may say who it is (a session token in x-turn-session), so that
+	// the credentials it mints as a host after a handover are charged to it. A
+	// token that does not verify is refused, not ignored.
+	subject := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if v := md.Get(SessionMetadata); len(v) > 1 || (len(v) == 1 && (v[0] == "" || len(v[0]) > 8<<10)) {
+			return nil, errUnauth
+		} else if len(v) == 1 {
+			if subject, err = s.cfg.Auth(ctx, v[0]); err != nil || subject == "" {
+				return nil, errUnauth
+			}
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -525,10 +665,10 @@ func (s *Server) JoinRoom(ctx context.Context, req *turnv1.JoinRoomRequest) (_ *
 	}
 	rm.nextID++
 	g := newPeer("g" + strconv.Itoa(rm.nextID))
-	g.pending, g.name, g.since = true, name, s.now()
+	g.pending, g.name, g.since, g.subject = true, name, s.now(), subject
 	rm.peers[g.id] = g
-	rm.push(rm.peers[HostID], sys(g.id, HostID, "sys.knock", name), 0, true)
-	return &turnv1.JoinRoomResponse{Room: rm.id, Peer: g.id, Host: HostID, Token: g.token, Expires: rm.expires.Unix(), Pending: true}, nil
+	rm.tellHostsLocked(g, "sys.knock", name)
+	return &turnv1.JoinRoomResponse{Room: rm.id, Peer: g.id, Host: rm.host.id, Token: g.token, Expires: rm.expires.Unix(), Pending: true}, nil
 }
 
 // peerLocked authenticates a token as a peer of the room.
@@ -549,31 +689,62 @@ func (s *Server) peerLocked(roomID, tok string) (*room, *peer, error) {
 	return rm, found, nil
 }
 
-// hostLocked authenticates the host.
+// hostLocked authenticates THE host: what only it may do (hand over, appoint
+// and revoke co-hosts).
 func (s *Server) hostLocked(ctx context.Context, roomID string) (*room, error) {
 	rm, p, err := s.peerLocked(roomID, bearer(ctx))
 	if err != nil {
 		return nil, err
 	}
-	if p.id != HostID {
+	if p != rm.host {
 		return nil, status.Error(codes.PermissionDenied, "only the host can do this")
 	}
 	return rm, nil
 }
 
-func (s *Server) decision(ctx context.Context, req *turnv1.DecideRequest) (*room, *peer, error) {
-	if req.GetPeer() == "" || req.GetPeer() == HostID {
-		return nil, nil, status.Error(codes.InvalidArgument, "bad peer")
-	}
-	rm, err := s.hostLocked(ctx, req.GetRoom())
+// powerLocked authenticates the host or a co-host: what they share (admit,
+// deny, close the room). The peer is returned too.
+func (s *Server) powerLocked(ctx context.Context, roomID string) (*room, *peer, error) {
+	rm, p, err := s.peerLocked(roomID, bearer(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
-	g := rm.peers[req.GetPeer()]
+	if !rm.hasHostPowers(p) {
+		return nil, nil, status.Error(codes.PermissionDenied, "only the host can do this")
+	}
+	return rm, p, nil
+}
+
+func (s *Server) decision(ctx context.Context, req *turnv1.DecideRequest) (*room, *peer, error) {
+	if req.GetPeer() == "" {
+		return nil, nil, status.Error(codes.InvalidArgument, "bad peer")
+	}
+	rm, by, err := s.powerLocked(ctx, req.GetRoom())
+	if err != nil {
+		return nil, nil, err
+	}
+	g := rm.peerByID(req.GetPeer())
+	if g == rm.host {
+		return nil, nil, status.Error(codes.InvalidArgument, "bad peer")
+	}
 	if g == nil {
 		return nil, nil, status.Error(codes.NotFound, "no such peer")
 	}
+	// nobody decides about a peer with host powers but the host itself
+	if g.cohost && by != rm.host {
+		return nil, nil, status.Error(codes.PermissionDenied, "only the host decides about a co-host")
+	}
 	return rm, g, nil
+}
+
+// tellHostsLocked sends one event to the host and every co-host, each addressed
+// to itself: whoever may decide must hear the knocks, joins and leaves.
+func (rm *room) tellHostsLocked(from *peer, kind, body string) {
+	for _, p := range rm.peers {
+		if rm.hasHostPowers(p) && p != from {
+			rm.push(p, sys(from.id, p.id, kind, body), 0, true)
+		}
+	}
 }
 
 // Admit implements turn.v1.Turnd.
@@ -588,13 +759,17 @@ func (s *Server) Admit(ctx context.Context, req *turnv1.DecideRequest) (_ *turnv
 	if !g.pending {
 		return nil, status.Error(codes.FailedPrecondition, "already admitted")
 	}
-	if rm.admitted >= s.cfg.Limits.MaxGuests {
-		return nil, status.Error(codes.ResourceExhausted, "the room is full")
+	if rm.guestsLocked() >= rm.maxGuests {
+		return nil, status.Error(codes.ResourceExhausted, "the room is full: "+strconv.Itoa(rm.maxGuests)+" guests at once")
 	}
-	rm.admitted++
-	g.pending = false
-	rm.push(g, sys(HostID, g.id, "sys.admitted", ""), 0, true)
-	rm.push(rm.peers[HostID], sys(g.id, HostID, "sys.join", g.name), 0, true)
+	if rm.admissions >= s.cfg.Limits.MaxAdmissions {
+		return nil, status.Error(codes.ResourceExhausted, "this room has admitted too many guests in its life ("+strconv.Itoa(s.cfg.Limits.MaxAdmissions)+")")
+	}
+	rm.admissions++
+	rm.ranks++
+	g.pending, g.rank = false, rm.ranks
+	rm.push(g, sys(rm.host.id, g.id, "sys.admitted", ""), 0, true)
+	rm.tellHostsLocked(g, "sys.join", g.name)
 	return &turnv1.Ack{}, nil
 }
 
@@ -609,9 +784,9 @@ func (s *Server) Deny(ctx context.Context, req *turnv1.DecideRequest) (_ *turnv1
 		return nil, err
 	}
 	if !g.pending {
-		rm.push(rm.peers[HostID], sys(g.id, HostID, "sys.leave", "removed"), 0, true)
+		rm.tellHostsLocked(g, "sys.leave", "removed")
 	}
-	rm.removeLocked(g, sys(HostID, g.id, "sys.denied", ""))
+	rm.removeLocked(g, sys(rm.host.id, g.id, "sys.denied", ""))
 	return &turnv1.Ack{}, nil
 }
 
@@ -633,7 +808,17 @@ func (s *Server) RoomCredentials(ctx context.Context, req *turnv1.RoomRef) (_ *t
 		return nil, status.Error(codes.ResourceExhausted, "too many credential requests for this room")
 	}
 	rm.creds++
-	exp, sub := rm.expires, rm.subject
+	// Charged to the host of the moment when it said who it is (a promoted
+	// guest that presented a session), else to who opened the room; a co-host
+	// that said who it is pays for itself. The expiry is the room's: neither a
+	// handover nor a co-host extends it.
+	exp, sub := rm.expires, rm.host.subject
+	if p.cohost && p.subject != "" {
+		sub = p.subject
+	}
+	if sub == "" {
+		sub = rm.subject
+	}
 	s.mu.Unlock()
 	if e := s.now().Add(s.cfg.CredTTL); e.Before(exp) {
 		exp = e
@@ -646,7 +831,7 @@ func (s *Server) CloseRoom(ctx context.Context, req *turnv1.RoomRef) (_ *turnv1.
 	defer func() { s.seen(ctx, "close_room", err) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rm, err := s.hostLocked(ctx, req.GetRoom())
+	rm, _, err := s.powerLocked(ctx, req.GetRoom())
 	if err != nil {
 		return nil, err
 	}
@@ -676,6 +861,9 @@ func (s *Server) route(rm *room, from *peer, m *turnv1.Envelope) error {
 		return status.Error(codes.ResourceExhausted, "message too large")
 	}
 	if m.GetFrom() != from.id {
+		if m.GetFrom() == HostAlias {
+			return status.Error(codes.PermissionDenied, `from is not you: "host" is an address, not a peer ID (since v0.7); use the peer ID the server gave you`)
+		}
 		return status.Error(codes.PermissionDenied, "from is not you")
 	}
 	if !validKind(m.GetKind()) {
@@ -690,44 +878,371 @@ func (s *Server) route(rm *room, from *peer, m *turnv1.Envelope) error {
 		return status.Error(codes.PermissionDenied, "not admitted yet")
 	}
 	// Routing is host to guest and guest to host, never guest to guest.
-	if from.id != HostID && m.GetTo() != HostID {
+	// "host" is an address for the CURRENT host, resolved the same way for
+	// every sender; a peer may also be addressed by its real ID. The host
+	// addressing "host" is addressing itself: refused, and said so.
+	to := m.GetTo()
+	if to == HostAlias {
+		if from == rm.host {
+			rm.push(from, sysError(rm, from.id, codes.InvalidArgument, `"host" is the address of the host, which is you`), 0, true)
+			return nil
+		}
+		to = rm.host.id
+	} else if from != rm.host && to != rm.host.id {
 		return status.Error(codes.PermissionDenied, "guests talk to the host")
 	}
 	// What depends on the other peer's state is not the sender's fault (the
 	// guest may have just left), so it does not end the stream: the sender gets
 	// a sys.error event carrying the code and the reason.
-	dst := rm.peers[m.GetTo()]
+	dst := rm.peers[to]
 	if dst == nil || dst == from || dst.pending {
-		rm.push(from, sysError(from.id, codes.NotFound, "no such peer"), 0, true)
+		rm.push(from, sysError(rm, from.id, codes.NotFound, "no such peer"), 0, true)
 		return nil
 	}
 	if !rm.push(dst, &turnv1.Envelope{From: from.id, To: dst.id, Kind: m.GetKind(), Body: m.GetBody()}, lim.MaxQueue, false) {
-		rm.push(from, sysError(from.id, codes.ResourceExhausted, "the peer's queue is full"), 0, true)
+		rm.push(from, sysError(rm, from.id, codes.ResourceExhausted, "the peer's queue is full"), 0, true)
 	}
 	return nil
 }
 
 // sysError is the event for a refusal that leaves the stream open: the body is
 // "<Code>: <reason>", with the gRPC code's name (codes.Code.String).
-func sysError(to string, c codes.Code, reason string) *turnv1.Envelope {
-	return sys(HostID, to, "sys.error", c.String()+": "+reason)
+func sysError(rm *room, to string, c codes.Code, reason string) *turnv1.Envelope {
+	return sys(rm.host.id, to, "sys.error", c.String()+": "+reason)
 }
 
 // leave is what ending a peer's stream means: a guest leaves, the host's
 // leaving closes the room.
-func (s *Server) leave(rm *room, p *peer) {
+func (s *Server) leave(rm *room, p *peer, dropped bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rm.peers[p.id] != p {
 		return // already removed (denied, expired, room closed)
 	}
-	if p.id == HostID {
+	if dropped && p != rm.host && !p.pending && s.cfg.Limits.GuestGrace > 0 {
+		// A dropped stream is not a goodbye: the guest keeps its place, its peer ID
+		// and its token for the grace period and resumes by opening a stream with
+		// the same token (no knock, no admission consumed). A half-close, or a
+		// protocol violation, is a departure.
+		p.lost = s.now()
+		time.AfterFunc(s.cfg.Limits.GuestGrace, func() {
+			s.mu.Lock()
+			s.settleLocked(rm, s.now())
+			s.mu.Unlock()
+		})
+		return
+	}
+	if p == rm.host {
+		if s.cfg.Limits.HostGrace < 0 {
+			s.closeLocked(rm)
+			delete(s.rooms, rm.id)
+			return
+		}
+		// The room outlives its host's stream for the grace period. The host
+		// peer stays (its token still works: a reopened stream is the host back),
+		// events and messages for it queue up.
+		rm.hostGone = s.now()
+		if rm.timer != nil {
+			rm.timer.Stop()
+		}
+		g := s.cfg.Limits.HostGrace
+		rm.timer = time.AfterFunc(g, func() {
+			s.mu.Lock()
+			s.settleLocked(rm, s.now())
+			s.mu.Unlock()
+			s.flushNotes(context.Background())
+		})
+		s.noteLocked("host_lost", "ok")
+		return
+	}
+	rm.removeLocked(p, nil)
+	rm.tellHostsLocked(p, "sys.leave", "")
+}
+
+// guestsLocked counts the guests admitted NOW (the host and the waiting do not
+// count): a place is freed by leaving, a denial or an expired absence.
+func (rm *room) guestsLocked() int {
+	n := 0
+	for _, p := range rm.peers {
+		if !p.pending && p != rm.host {
+			n++
+		}
+	}
+	return n
+}
+
+// hasHostPowers is the one predicate for "may admit, deny, close the room": the
+// active host (rm.host, a peer, never a renamed ID: the host is data on the
+// room, not the constant "host") or a co-host the host appointed. There is
+// exactly ONE active host, the peer that runs the document's centre; handing
+// over, appointing and revoking stay the host's alone.
+func (rm *room) hasHostPowers(p *peer) bool { return p == rm.host || p.cohost }
+
+// hostBackLocked ends the grace period: the host has its role.
+func (rm *room) hostBackLocked() {
+	rm.hostGone = time.Time{}
+	if rm.timer != nil {
+		rm.timer.Stop()
+		rm.timer = nil
+	}
+}
+
+// settleLocked ends the grace period if it is over: the earliest-admitted
+// guest still connected becomes the host, and if there is none the room is
+// over (nobody is left to host it).
+func (s *Server) settleLocked(rm *room, now time.Time) {
+	if rm.isClosed {
+		return
+	}
+	// the guests whose absence has lasted: gone, their place is free
+	for _, p := range rm.peers {
+		if !p.lost.IsZero() && !p.streaming && !now.Before(p.lost.Add(s.cfg.Limits.GuestGrace)) {
+			rm.removeLocked(p, nil)
+			rm.tellHostsLocked(p, "sys.leave", "")
+		}
+	}
+	if rm.isClosed || rm.hostGone.IsZero() || now.Before(rm.hostGone.Add(s.cfg.Limits.HostGrace)) {
+		return
+	}
+	var best *peer
+	for _, p := range rm.peers {
+		if p.pending || p == rm.host || !p.streaming {
+			continue
+		}
+		// the earliest-APPOINTED co-host first; no co-host connected: the
+		// earliest-ADMITTED guest
+		if best == nil || better(p, best) {
+			best = p
+		}
+	}
+	if best == nil {
+		s.noteLocked("promote", "failed_precondition")
 		s.closeLocked(rm)
 		delete(s.rooms, rm.id)
 		return
 	}
-	rm.removeLocked(p, nil)
-	rm.push(rm.peers[HostID], sys(p.id, HostID, "sys.leave", ""), 0, true)
+	s.handOverLocked(rm, best)
+	s.noteLocked("promote", "ok")
+}
+
+// better reports whether a is to be promoted before b.
+func better(a, b *peer) bool {
+	if a.cohost != b.cohost {
+		return a.cohost
+	}
+	if a.cohost {
+		return a.cohostRnk < b.cohostRnk
+	}
+	return a.rank < b.rank
+}
+
+type hostChange struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type cohostEvent struct {
+	Peer string `json:"peer"`
+}
+
+// AppointCoHost implements turn.v1.Turnd.
+func (s *Server) AppointCoHost(ctx context.Context, req *turnv1.CoHostRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "appoint_cohost", err) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm, err := s.hostLocked(ctx, req.GetRoom())
+	if err != nil {
+		return nil, err
+	}
+	g := rm.peerByID(req.GetPeer())
+	switch {
+	case req.GetPeer() == "" || g == rm.host:
+		return nil, status.Error(codes.InvalidArgument, "bad peer")
+	case g == nil:
+		return nil, status.Error(codes.NotFound, "no such peer")
+	case g.pending:
+		return nil, status.Error(codes.FailedPrecondition, "not admitted yet")
+	case g.cohost:
+		return nil, status.Error(codes.FailedPrecondition, "already a co-host")
+	}
+	rm.cranks++
+	g.cohost, g.cohostRnk = true, rm.cranks
+	rm.tellAllLocked("sys.cohost-added", g.id)
+	// a new co-host answers the knocks too: it hears the waiting guests again
+	var waiting []*peer
+	for _, p := range rm.peers {
+		if p.pending {
+			waiting = append(waiting, p)
+		}
+	}
+	sort.Slice(waiting, func(i, j int) bool { return waiting[i].since.Before(waiting[j].since) })
+	for _, p := range waiting {
+		rm.push(g, sys(p.id, g.id, "sys.knock", p.name), 0, true)
+	}
+	return &turnv1.Ack{}, nil
+}
+
+// RevokeCoHost implements turn.v1.Turnd.
+func (s *Server) RevokeCoHost(ctx context.Context, req *turnv1.CoHostRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "revoke_cohost", err) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm, err := s.hostLocked(ctx, req.GetRoom())
+	if err != nil {
+		return nil, err
+	}
+	g := rm.peerByID(req.GetPeer())
+	switch {
+	case req.GetPeer() == "" || g == rm.host:
+		return nil, status.Error(codes.InvalidArgument, "bad peer")
+	case g == nil:
+		return nil, status.Error(codes.NotFound, "no such peer")
+	case !g.cohost:
+		return nil, status.Error(codes.FailedPrecondition, "not a co-host")
+	}
+	g.cohost = false // the powers go with this call, not with the news
+	rm.tellAllLocked("sys.cohost-removed", g.id)
+	return &turnv1.Ack{}, nil
+}
+
+// tellAllLocked sends a co-host event, body {"peer":id}, to every peer.
+func (rm *room) tellAllLocked(kind, id string) {
+	body, _ := json.Marshal(cohostEvent{Peer: id})
+	for _, p := range rm.peers {
+		rm.push(p, sys(rm.host.id, p.id, kind, string(body)), 0, true)
+	}
+}
+
+// handOverLocked makes to the host: the one place the role moves, under the
+// server's lock, so there is exactly one host at any moment.
+func (s *Server) handOverLocked(rm *room, to *peer) {
+	old := rm.host
+	body, _ := json.Marshal(hostChange{From: old.id, To: to.id})
+	// What guests sent to the host and the old host never read goes to the new
+	// one, in order: nothing is lost in the window. Events (sys.*) are not carried,
+	// the new host is told the state again below.
+	var carry []*turnv1.Envelope
+	for _, e := range old.queue {
+		if !strings.HasPrefix(e.GetKind(), "sys.") && e.GetFrom() != to.id {
+			carry = append(carry, &turnv1.Envelope{From: e.GetFrom(), To: to.id, Kind: e.GetKind(), Body: e.GetBody()})
+		}
+	}
+	old.queue = nil
+	rm.hostBackLocked()
+	// The old host leaves the room's peers, its token is dead and its stream (if
+	// it is still there) ends after the news. It may come back with Reclaim.
+	rm.removeLocked(old, sys(to.id, old.id, "sys.host-changed", string(body)))
+	old.token = ""
+	rm.former[old.id] = old
+	rm.host = to
+	to.rank = 0
+	to.cohost = false // the host's powers contain a co-host's; sys.host-changed is the news
+	for _, p := range rm.peers {
+		rm.push(p, sys(to.id, p.id, "sys.host-changed", string(body)), 0, true)
+	}
+	// Admission survives the handover: the waiting guests knock again, to the
+	// new host, and the admitted ones are announced to it.
+	var others []*peer
+	for _, p := range rm.peers {
+		if p != to {
+			others = append(others, p)
+		}
+	}
+	sort.Slice(others, func(i, j int) bool {
+		a, b := others[i], others[j]
+		if a.pending != b.pending {
+			return !a.pending // admitted first
+		}
+		if a.pending {
+			return a.since.Before(b.since)
+		}
+		return a.rank < b.rank
+	})
+	for _, p := range others {
+		if p.pending {
+			rm.push(to, sys(p.id, to.id, "sys.knock", p.name), 0, true)
+		} else {
+			rm.push(to, sys(p.id, to.id, "sys.join", p.name), 0, true)
+		}
+	}
+	for _, e := range carry {
+		rm.push(to, e, 0, true)
+	}
+}
+
+// HandOver implements turn.v1.Turnd.
+func (s *Server) HandOver(ctx context.Context, req *turnv1.HandOverRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "hand_over", err) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm, err := s.hostLocked(ctx, req.GetRoom())
+	if err != nil {
+		return nil, err
+	}
+	to := rm.peerByID(req.GetTo())
+	switch {
+	case req.GetTo() == "":
+		return nil, status.Error(codes.InvalidArgument, "bad peer")
+	case to == rm.host:
+		return nil, status.Error(codes.InvalidArgument, "the host cannot hand over to itself")
+	case to == nil:
+		return nil, status.Error(codes.NotFound, "no such peer")
+	case to.pending:
+		return nil, status.Error(codes.FailedPrecondition, "not admitted yet")
+	case !to.streaming:
+		return nil, status.Error(codes.FailedPrecondition, "not connected")
+	}
+	s.handOverLocked(rm, to)
+	return &turnv1.Ack{}, nil
+}
+
+// Reclaim implements turn.v1.Turnd.
+func (s *Server) Reclaim(ctx context.Context, req *turnv1.ReclaimRequest) (_ *turnv1.ReclaimResponse, err error) {
+	defer func() { s.seen(ctx, "reclaim", err) }()
+	sub, err := s.subject(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm := s.roomLocked(req.GetRoom())
+	if rm == nil {
+		return nil, errNoRoom
+	}
+	switch old := rm.host; {
+	case old.subject == sub:
+		// The host's role is still theirs. The peer is replaced, so a stale
+		// stream of the old one ends and nothing it had not read is lost.
+		np := newPeer(old.id)
+		np.name, np.subject, np.queue = old.name, old.subject, old.queue
+		old.queue, old.token = nil, ""
+		rm.peers[np.id] = np
+		rm.host = np
+		old.stop()
+		rm.hostBackLocked()
+		return &turnv1.ReclaimResponse{Room: rm.id, Peer: np.id, Host: true, HostPeer: np.id, Token: np.token, Expires: rm.expires.Unix()}, nil
+	default:
+		for id, f := range rm.former {
+			if f.subject != sub {
+				continue
+			}
+			// A handover happened: the person is an ordinary admitted guest, with
+			// the peer ID it had (so whatever is derived from it is unchanged).
+			// no admission is consumed (it was admitted), but it takes a place
+			if rm.guestsLocked() >= rm.maxGuests {
+				return nil, status.Error(codes.ResourceExhausted, "the room is full: "+strconv.Itoa(rm.maxGuests)+" guests at once")
+			}
+			delete(rm.former, id)
+			np := newPeer(f.id)
+			np.name, np.subject = f.name, f.subject
+			rm.ranks++
+			np.rank = rm.ranks
+			rm.peers[np.id] = np
+			rm.push(rm.host, sys(np.id, rm.host.id, "sys.join", np.name), 0, true)
+			return &turnv1.ReclaimResponse{Room: rm.id, Peer: np.id, HostPeer: rm.host.id, Token: np.token, Expires: rm.expires.Unix()}, nil
+		}
+	}
+	return nil, status.Error(codes.PermissionDenied, "you were never the host of this room")
 }
 
 // Room implements turn.v1.Turnd.
@@ -750,24 +1265,44 @@ func (s *Server) Room(stream grpc.BidiStreamingServer[turnv1.Envelope, turnv1.En
 		return err
 	}
 	p.streaming = true
+	p.lost = time.Time{} // a guest back with its token resumes: same peer, nothing consumed
+	if p == rm.host {
+		rm.hostBackLocked() // the host's stream is open again within the grace period
+	}
 	s.mu.Unlock()
 	s.seen(ctx, "stream", nil)
+	sctx, stop := context.WithCancel(ctx)
+	sendDone := make(chan error, 1)
+	sent := false
+	var dropped atomic.Bool // the transport failed or the stream was cancelled: not a goodbye
 	defer func() {
+		// The send loop is over before the peer is marked as gone: it would
+		// otherwise race a reopened stream for the same queue.
+		stop()
+		if !sent {
+			// Bounded: a Send blocked on a client that does not read ends only
+			// when this handler returns (and then requeues what it held).
+			select {
+			case <-sendDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
 		s.mu.Lock()
 		p.streaming = false
 		s.mu.Unlock()
-		s.leave(rm, p)
+		s.leave(rm, p, dropped.Load())
+		s.flushNotes(ctx)
 	}()
-
-	sendDone := make(chan error, 1)
-	go func() { sendDone <- s.sendLoop(ctx, stream, rm, p) }()
+	go func() { sendDone <- s.sendLoop(sctx, stream, rm, p) }()
 	recvDone := make(chan error, 1)
 	go func() {
 		for {
 			m, err := stream.Recv()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					err = nil
+					err = nil // a half-close: leaving, on purpose
+				} else {
+					dropped.Store(true)
 				}
 				recvDone <- err
 				return
@@ -780,10 +1315,31 @@ func (s *Server) Room(stream grpc.BidiStreamingServer[turnv1.Envelope, turnv1.En
 	}()
 	select {
 	case err := <-sendDone:
+		sent = true
+		if err != nil || ctx.Err() != nil { // the send loop also ends quietly on a cancelled stream
+			dropped.Store(true)
+		}
 		return err
 	case err := <-recvDone:
+		if ctx.Err() != nil {
+			dropped.Store(true)
+		}
 		return err
 	}
+}
+
+func (s *Server) hostID(rm *room) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return rm.host.id
+}
+
+// peerByID finds a peer by its ID; "host" is the address of the current host.
+func (rm *room) peerByID(id string) *peer {
+	if id == HostAlias {
+		return rm.host
+	}
+	return rm.peers[id]
 }
 
 func (s *Server) sendLoop(ctx context.Context, stream grpc.BidiStreamingServer[turnv1.Envelope, turnv1.Envelope], rm *room, p *peer) error {
@@ -803,6 +1359,15 @@ func (s *Server) sendLoop(ctx context.Context, stream grpc.BidiStreamingServer[t
 				break
 			}
 			if err := stream.Send(e); err != nil {
+				// Not delivered: back to the front of the queue (of the peer's
+				// current incarnation if Reclaim replaced it), for the next stream.
+				s.mu.Lock()
+				cur := rm.peers[p.id]
+				if cur == nil {
+					cur = p
+				}
+				cur.queue = append([]*turnv1.Envelope{e}, cur.queue...)
+				s.mu.Unlock()
 				return err
 			}
 		}
@@ -814,10 +1379,10 @@ func (s *Server) sendLoop(ctx context.Context, stream grpc.BidiStreamingServer[t
 		case <-p.done:
 			removed = true // loop once more to flush what was queued before removal
 		case <-rm.closed:
-			_ = stream.Send(sys(HostID, p.id, "sys.closed", ""))
+			_ = stream.Send(sys(s.hostID(rm), p.id, "sys.closed", ""))
 			return nil
 		case <-expiry.C:
-			_ = stream.Send(sys(HostID, p.id, "sys.closed", ""))
+			_ = stream.Send(sys(s.hostID(rm), p.id, "sys.closed", ""))
 			return nil
 		case <-ctx.Done():
 			return nil

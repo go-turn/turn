@@ -64,11 +64,14 @@ with no `Origin` header is a native client. Only browser navigations stay HTTP:
 |---|---|---|
 | `Credentials` | session, or issuer access token | `IceServers{ice_servers[{urls,username,credential}], ttl}` |
 | `RenewSession` | a session token, valid or expired for under 5 minutes | `{token, expires}`: a new session token; `UNAUTHENTICATED` = sign in again (see below) |
-| `CreateRoom` | session or access token | `{room, peer:"host", token, expires}`; the room ID is 128 random bits |
+| `CreateRoom` | session or access token | `{room, peer:"g1", token, expires}`: the creator's peer ID is ordinary, minted like a guest's (**breaking since v0.7: it was `"host"`**); the room ID is 128 random bits |
 | `JoinRoom{room,name}` | none: the room ID | `{peer, host, token, expires, pending:true}`; the guest is **pending** |
 | `Admit{room,peer}` / `Deny{room,peer}` | host token | admit a pending guest / refuse it (or remove an admitted one): its token is dead |
-| `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the host |
+| `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the current host's person (see *A room outlives its host*) |
 | `CloseRoom{room}` | host token | ends the room |
+| `HandOver{room,to}` | host token | gives the host role to an admitted, connected guest; the old host's token is dead |
+| `AppointCoHost{room,peer}` / `RevokeCoHost{room,peer}` | host token only | an **admitted** peer may admit, deny and close beside the host (see *Co-hosts*); revoking takes the powers at once |
+| `Reclaim{room}` | a **session** token whose subject was the host's | `{peer, host, host_peer, token, expires}`: the host role back (new token), or, after a handover, an admitted guest with the SAME peer ID |
 | `Room(stream Envelope) returns (stream Envelope)` | peer token + `x-turn-room` metadata | the room's one stream: events down, messages up; ending it is leaving |
 
 **Renewing a session.** At `/callback` turnd asks the issuer for `openid
@@ -100,8 +103,9 @@ A leaked room link lets a stranger **knock**, not enter. A pending guest only
 receives: it cannot send, cannot get credentials, counts against a separate
 pending cap and a pending TTL. The host sees `sys.knock` (`from` = the guest,
 `body` = its display name, at most 64 characters, no control characters) and
-decides; only admitted guests count against `--max-guests` and produce `sys.join`.
-Other system events: `sys.admitted`, `sys.denied`, `sys.leave`, `sys.closed`, and
+decides; only admitted guests count against the room's cap and produce `sys.join`.
+Other system events: `sys.admitted`, `sys.denied`, `sys.leave`, `sys.closed`,
+`sys.host-changed`, and
 `sys.error` (a message the other peer could not take; the stream stays open).
 A message that breaks the protocol (too large, a spoofed `from`, a bad kind, a
 pending sender, guest to guest) ends the sender's stream with a status:
@@ -110,12 +114,108 @@ pending sender, guest to guest) ends the sender's stream with a status:
 stream for one peer), `FAILED_PRECONDITION` (already admitted), `UNAVAILABLE`
 (server full).
 
+**A room outlives its host.** Collaboration is peer to peer, so a room must not
+die with the one browser that opened it. When the host's stream ends the room
+lives on for `--host-grace` (default `2m`; a negative value restores the old
+behaviour, the host leaving closes the room).
+
+- *Within the grace* the host back as the same person keeps the role, with
+  nothing changed for the others: `Reclaim` with a session token of the host's
+  subject (new host token, the old one dead), or simply a new `Room` stream with
+  its own token. Messages sent to `"host"` meanwhile wait in its queue (the usual
+  `--max-queue`; past it the sender gets `sys.error`) and are delivered on return.
+  What can still be lost, and only this: a message the server wrote to the old
+  host's connection before it noticed that the connection was dead (the
+  rendezvous cannot know; the collab layer's rejoin with a version vector covers
+  it).
+- *Past the grace*, or when the host calls `HandOver{room,to}` first, the
+  earliest-appointed **co-host** still connected, else the
+  **earliest-admitted guest still connected**, becomes the host (no version-vector
+  election: the collab layer reconciles in both directions on rejoin). A
+  pending, denied or disconnected guest is never promoted; if nobody qualifies the
+  room closes (`promote` / `failed_precondition`). A guest cannot promote itself
+  and a non-host cannot `HandOver` (`PERMISSION_DENIED`); to a pending guest it is
+  `FAILED_PRECONDITION`, to a stranger `NOT_FOUND`. The role moves under the
+  server's lock: there is exactly one host at any moment, whatever races.
+- *What changes.* The promoted peer keeps its peer ID and its token (so the site
+  identity a collab layer derives from the peer ID is stable) and gains the host's
+  powers: `Admit`, `Deny`, `HandOver`, `CloseRoom`. Every peer, the old host
+  included, receives `sys.host-changed` with body `{"from":"<peer>","to":"<peer>"}`.
+  The new host is told again about the room: `sys.knock` for each pending guest,
+  `sys.join` for each admitted one, then the messages that were queued for the old
+  host, in order (the guests' messages sent to `"host"` during the outage are not
+  dropped).
+- *The address `"host"` — breaking since v0.7.* No peer is named `"host"` any more:
+  the creator has an ordinary ID (`g1`), `from` is always a real peer ID, and
+  `sys.host-changed {from,to}` names real IDs. `"host"` survives only as the
+  `to` of a message, an alias for the current active host with the **same meaning
+  for every sender** (guest, co-host, the old host back as a guest). The host
+  addressing `"host"` gets a `sys.error` `InvalidArgument` (it would be itself),
+  and addresses a guest by its real ID. Clients learn the host's real ID from the
+  `CreateRoom`, `JoinRoom` and `Reclaim` answers and from `sys.host-changed`
+  (`client.Room.HostPeer()`). A v0.6 client that hard-codes `"host"` as the
+  creator's `from` is refused at once with `PERMISSION_DENIED` ("from is not
+  you ... use the peer ID the server gave you"), not routed wrongly.
+  The room's TTL is **never** extended.
+- *Who pays.* `RoomCredentials` are charged to the current host's person if it
+  said who it is when it knocked (`x-turn-session` metadata, `client.WithSession`),
+  else to the person who opened the room, until the TTL.
+- *The old host returns after a promotion* with `Reclaim` and the same session:
+  it keeps its own (ordinary) peer ID and is an **admitted** guest of the new host (no
+  knock; the new host sees `sys.join`), with a new token and the lowest priority
+  among the guests. Its old token stays dead.
+- *What the collab layer does on `sys.host-changed`.* The new host starts its
+  `collab.Server` seeded from its own replica; the others rejoin it through the
+  rendezvous with their version vector (a rejoin syncs both ways, so a guest that
+  is ahead of the new host pushes what it holds). In peer-to-peer mode nothing may
+  purge history, or a purged replica could not serve a rejoin.
+
+**How many guests.** The cap is on guests admitted **at once**, not over the
+room's life: a guest that leaves, is denied, or whose absence expires frees its
+place (`ResourceExhausted`, "the room is full: N guests at once", is for a room
+that is full now). `CreateRoom{max_guests}` sets the room's cap (default 8, or the
+server's ceiling if lower; `--max-guests` is that **ceiling**, above it or
+negative is `INVALID_ARGUMENT`; `client.WithMaxGuests(n)`). A separate
+`--max-admissions` (default 4 x `--max-guests`) bounds the admissions in the
+room's whole life, so that churn stays bounded; its refusal says "admitted too
+many guests in its life". A guest whose connection **dropped** (cancelled or
+broken; a half-close is a goodbye, and `client.Room.Close` says it) keeps its
+place, peer ID and token for `--guest-grace` (default 30s): opening a stream with
+the same token **resumes**, with no knock and no admission consumed, and the host
+hears `sys.leave` only when the absence expires. A host handover consumes no
+admission either (the old host returning with `Reclaim` takes a place, not an
+admission). The real ceiling of a star is the host's uplink, to be measured by the
+3 to 4 browser proof; 8 is the default, not a measured limit.
+
+**Co-hosts.** The host (and only the host) appoints an admitted guest with
+`AppointCoHost{room,peer}` and takes it back with `RevokeCoHost`; a pending,
+denied or unknown peer cannot be appointed (`FAILED_PRECONDITION`, `NOT_FOUND`),
+and a guest or a co-host that tries to appoint, revoke or `HandOver` is refused
+(`PERMISSION_DENIED`). A co-host may `Admit`, `Deny` (not the host or another
+co-host: only the host removes a co-host) and `CloseRoom`, and gets
+`RoomCredentials` charged to its own subject when it presented a session, else to
+the host's, never past the room's TTL. There is still exactly **one** active host,
+the peer that runs the document's centre. Everyone receives `sys.cohost-added` /
+`sys.cohost-removed` with body `{"peer":"<id>"}`; revoking removes the powers with
+the call itself. The knocks, joins and leaves are sent to the host **and every
+co-host**, so the **pending-guest expiry** (`MaxPending`, a 2-minute `PendingTTL`)
+now has several people to answer it, and a waiting guest's `sys.leave "expired"`
+reaches them all. On a host loss past the grace the **earliest-appointed co-host
+still connected is promoted first**; only if none remains, the earliest-admitted
+guest. A promoted co-host is the host (no longer listed as a co-host). Client:
+`AppointCoHost`, `RevokeCoHost`, `CloseRoom`, `IsCoHost`, `Event.CoHost`.
+
+New observer actions (and `turnd.rendezvous.operations` actions): `hand_over`,
+`appoint_cohost`, `revoke_cohost`, `reclaim`, and the two with no RPC, `host_lost` (the grace starts) and `promote`
+(the grace ended); never a token, room, peer or name.
+
 The credential scheme is
 [draft-uberti-behave-turn-rest-00](https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00).
 The Go client, for the browser and native, is
 `github.com/go-turn/turn/rendezvous/client`: `Create`, `Join(name)` (blocks until
-admitted, `ErrDenied` otherwise), `Admit`, `Deny`, `Send`, `Recv`, `Credentials`,
-`Close`. It is a real grpc-go client dialed over the browser's WebSocket through
+admitted, `ErrDenied` otherwise; `WithSession(token)` says who the guest is),
+`Admit`, `Deny`, `Send`, `Recv`, `Credentials`, `Close`, and for the handover
+`HandOver`, `Reclaim`, `IsHost`, `HostPeer` and `Event.HostChange`. It is a real grpc-go client dialed over the browser's WebSocket through
 `syscall/js`; it adds about 16 MB to a wasm binary (3.5 MB more gzipped), almost
 all of it grpc. go-crdt/collab's js/wasm build does not link grpc, so a page that
 does not otherwise ship it should load this client in a separate wasm, fetched

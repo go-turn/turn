@@ -33,7 +33,9 @@ import (
 // What other signals are derived from these: allocations created and refused
 // are turnd.relay.requests{method=allocate} with result ok or the refusal;
 // knocks, admits and denies are turnd.rendezvous.operations{action=knock,
-// admit, deny}; credentials minted are the operations credentials_host and
+// admit, deny}; host changes are the actions hand_over (the host chose),
+// host_lost (its stream ended, the grace period starts), promote (the grace
+// ended) and reclaim (the host, or a former one, came back); credentials minted are the operations credentials_host and
 // credentials_room with outcome ok; sessions issued and refused are
 // turnd.login.outcomes. The gRPC instrumentation adds rpc.server.* on its own.
 type Metrics struct {

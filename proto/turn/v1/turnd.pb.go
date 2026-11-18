@@ -164,7 +164,11 @@ func (x *RenewSessionResponse) GetExpires() int64 {
 }
 
 type CreateRoomRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// max_guests is how many guests this room admits AT ONCE (a leaving guest
+	// frees its place). 0: the default, 8 (or the server's ceiling if lower).
+	// Above the server's --max-guests (the ceiling) or negative: INVALID_ARGUMENT.
+	MaxGuests     int32 `protobuf:"varint,1,opt,name=max_guests,json=maxGuests,proto3" json:"max_guests,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -199,12 +203,20 @@ func (*CreateRoomRequest) Descriptor() ([]byte, []int) {
 	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{3}
 }
 
+func (x *CreateRoomRequest) GetMaxGuests() int32 {
+	if x != nil {
+		return x.MaxGuests
+	}
+	return 0
+}
+
 type CreateRoomResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"` // 128 random bits, 32 hex characters
-	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"` // "host"
+	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"` // the creator's peer ID, ordinary ("g1"); no peer is ever named "host"
 	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
-	Expires       int64                  `protobuf:"varint,4,opt,name=expires,proto3" json:"expires,omitempty"` // Unix seconds
+	Expires       int64                  `protobuf:"varint,4,opt,name=expires,proto3" json:"expires,omitempty"`                      // Unix seconds
+	MaxGuests     int32                  `protobuf:"varint,5,opt,name=max_guests,json=maxGuests,proto3" json:"max_guests,omitempty"` // the room's cap on guests admitted at once
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -263,6 +275,13 @@ func (x *CreateRoomResponse) GetToken() string {
 func (x *CreateRoomResponse) GetExpires() int64 {
 	if x != nil {
 		return x.Expires
+	}
+	return 0
+}
+
+func (x *CreateRoomResponse) GetMaxGuests() int32 {
+	if x != nil {
+		return x.MaxGuests
 	}
 	return 0
 }
@@ -499,6 +518,238 @@ func (x *RoomRef) GetRoom() string {
 	return ""
 }
 
+type HandOverRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	To            string                 `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"` // the peer ID of an admitted, connected guest
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HandOverRequest) Reset() {
+	*x = HandOverRequest{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HandOverRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HandOverRequest) ProtoMessage() {}
+
+func (x *HandOverRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HandOverRequest.ProtoReflect.Descriptor instead.
+func (*HandOverRequest) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *HandOverRequest) GetRoom() string {
+	if x != nil {
+		return x.Room
+	}
+	return ""
+}
+
+func (x *HandOverRequest) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+type CoHostRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CoHostRequest) Reset() {
+	*x = CoHostRequest{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CoHostRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CoHostRequest) ProtoMessage() {}
+
+func (x *CoHostRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CoHostRequest.ProtoReflect.Descriptor instead.
+func (*CoHostRequest) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CoHostRequest) GetRoom() string {
+	if x != nil {
+		return x.Room
+	}
+	return ""
+}
+
+func (x *CoHostRequest) GetPeer() string {
+	if x != nil {
+		return x.Peer
+	}
+	return ""
+}
+
+type ReclaimRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReclaimRequest) Reset() {
+	*x = ReclaimRequest{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReclaimRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReclaimRequest) ProtoMessage() {}
+
+func (x *ReclaimRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReclaimRequest.ProtoReflect.Descriptor instead.
+func (*ReclaimRequest) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReclaimRequest) GetRoom() string {
+	if x != nil {
+		return x.Room
+	}
+	return ""
+}
+
+type ReclaimResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Room          string                 `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
+	Peer          string                 `protobuf:"bytes,2,opt,name=peer,proto3" json:"peer,omitempty"`                         // the SAME peer ID as before
+	Host          bool                   `protobuf:"varint,3,opt,name=host,proto3" json:"host,omitempty"`                        // true: the person is the host again; false: an admitted guest
+	HostPeer      string                 `protobuf:"bytes,4,opt,name=host_peer,json=hostPeer,proto3" json:"host_peer,omitempty"` // the current host's peer ID
+	Token         string                 `protobuf:"bytes,5,opt,name=token,proto3" json:"token,omitempty"`                       // a new peer token; the old one is dead
+	Expires       int64                  `protobuf:"varint,6,opt,name=expires,proto3" json:"expires,omitempty"`                  // the room's, never extended
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReclaimResponse) Reset() {
+	*x = ReclaimResponse{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReclaimResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReclaimResponse) ProtoMessage() {}
+
+func (x *ReclaimResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReclaimResponse.ProtoReflect.Descriptor instead.
+func (*ReclaimResponse) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReclaimResponse) GetRoom() string {
+	if x != nil {
+		return x.Room
+	}
+	return ""
+}
+
+func (x *ReclaimResponse) GetPeer() string {
+	if x != nil {
+		return x.Peer
+	}
+	return ""
+}
+
+func (x *ReclaimResponse) GetHost() bool {
+	if x != nil {
+		return x.Host
+	}
+	return false
+}
+
+func (x *ReclaimResponse) GetHostPeer() string {
+	if x != nil {
+		return x.HostPeer
+	}
+	return ""
+}
+
+func (x *ReclaimResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ReclaimResponse) GetExpires() int64 {
+	if x != nil {
+		return x.Expires
+	}
+	return 0
+}
+
 type Ack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -507,7 +758,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[9]
+	mi := &file_turn_v1_turnd_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -519,7 +770,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[9]
+	mi := &file_turn_v1_turnd_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -532,7 +783,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{9}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{13}
 }
 
 // IceServers is shaped like an RTCConfiguration's iceServers list.
@@ -546,7 +797,7 @@ type IceServers struct {
 
 func (x *IceServers) Reset() {
 	*x = IceServers{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	mi := &file_turn_v1_turnd_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -558,7 +809,7 @@ func (x *IceServers) String() string {
 func (*IceServers) ProtoMessage() {}
 
 func (x *IceServers) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	mi := &file_turn_v1_turnd_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -571,7 +822,7 @@ func (x *IceServers) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceServers.ProtoReflect.Descriptor instead.
 func (*IceServers) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{10}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *IceServers) GetIceServers() []*IceServer {
@@ -599,7 +850,7 @@ type IceServer struct {
 
 func (x *IceServer) Reset() {
 	*x = IceServer{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[11]
+	mi := &file_turn_v1_turnd_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -611,7 +862,7 @@ func (x *IceServer) String() string {
 func (*IceServer) ProtoMessage() {}
 
 func (x *IceServer) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[11]
+	mi := &file_turn_v1_turnd_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,7 +875,7 @@ func (x *IceServer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceServer.ProtoReflect.Descriptor instead.
 func (*IceServer) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{11}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *IceServer) GetUrls() []string {
@@ -656,6 +907,15 @@ func (x *IceServer) GetCredential() string {
 //	sys.admitted to a guest: the host let it in
 //	sys.denied   to a guest: refused, removed, or its wait expired; the token is dead
 //	sys.closed   to everyone: the room is over (the stream then ends)
+//	sys.host-changed to everyone, the old host included: body {"from":"<peer>","to":"<peer>"},
+//	             the host role moved; peer IDs do not change. The new host is also
+//	             told the pending guests (sys.knock) and the admitted ones (sys.join)
+//	             again, and gets the messages that were queued for the old host.
+//	             "host" as a message's to is an ALIAS for the CURRENT host, the same
+//	             for every sender (the host using it is told sys.error InvalidArgument);
+//	             "from" and every event name real peer IDs, never "host"
+//	sys.cohost-added / sys.cohost-removed to everyone: body {"peer":"<peer>"}; the
+//	             knocks, joins and leaves go to the host and every co-host
 //	sys.error    to the sender of a message the OTHER peer could not take (gone,
 //	             queue full): body "<Code>: <reason>" with the gRPC code's name,
 //	             e.g. "NotFound: no such peer"; the stream stays open
@@ -678,7 +938,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[12]
+	mi := &file_turn_v1_turnd_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -690,7 +950,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[12]
+	mi := &file_turn_v1_turnd_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -703,7 +963,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{12}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Envelope) GetSeq() uint64 {
@@ -750,13 +1010,17 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x13RenewSessionRequest\"F\n" +
 	"\x14RenewSessionResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x18\n" +
-	"\aexpires\x18\x02 \x01(\x03R\aexpires\"\x13\n" +
-	"\x11CreateRoomRequest\"l\n" +
+	"\aexpires\x18\x02 \x01(\x03R\aexpires\"2\n" +
+	"\x11CreateRoomRequest\x12\x1d\n" +
+	"\n" +
+	"max_guests\x18\x01 \x01(\x05R\tmaxGuests\"\x8b\x01\n" +
 	"\x12CreateRoomResponse\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
 	"\x04peer\x18\x02 \x01(\tR\x04peer\x12\x14\n" +
 	"\x05token\x18\x03 \x01(\tR\x05token\x12\x18\n" +
-	"\aexpires\x18\x04 \x01(\x03R\aexpires\"9\n" +
+	"\aexpires\x18\x04 \x01(\x03R\aexpires\x12\x1d\n" +
+	"\n" +
+	"max_guests\x18\x05 \x01(\x05R\tmaxGuests\"9\n" +
 	"\x0fJoinRoomRequest\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"\x98\x01\n" +
@@ -771,7 +1035,22 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
 	"\x04peer\x18\x02 \x01(\tR\x04peer\"\x1d\n" +
 	"\aRoomRef\x12\x12\n" +
-	"\x04room\x18\x01 \x01(\tR\x04room\"\x05\n" +
+	"\x04room\x18\x01 \x01(\tR\x04room\"5\n" +
+	"\x0fHandOverRequest\x12\x12\n" +
+	"\x04room\x18\x01 \x01(\tR\x04room\x12\x0e\n" +
+	"\x02to\x18\x02 \x01(\tR\x02to\"7\n" +
+	"\rCoHostRequest\x12\x12\n" +
+	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
+	"\x04peer\x18\x02 \x01(\tR\x04peer\"$\n" +
+	"\x0eReclaimRequest\x12\x12\n" +
+	"\x04room\x18\x01 \x01(\tR\x04room\"\x9a\x01\n" +
+	"\x0fReclaimResponse\x12\x12\n" +
+	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
+	"\x04peer\x18\x02 \x01(\tR\x04peer\x12\x12\n" +
+	"\x04host\x18\x03 \x01(\bR\x04host\x12\x1b\n" +
+	"\thost_peer\x18\x04 \x01(\tR\bhostPeer\x12\x14\n" +
+	"\x05token\x18\x05 \x01(\tR\x05token\x12\x18\n" +
+	"\aexpires\x18\x06 \x01(\x03R\aexpires\"\x05\n" +
 	"\x03Ack\"S\n" +
 	"\n" +
 	"IceServers\x123\n" +
@@ -789,7 +1068,7 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
 	"\x02to\x18\x03 \x01(\tR\x02to\x12\x12\n" +
 	"\x04kind\x18\x04 \x01(\tR\x04kind\x12\x12\n" +
-	"\x04body\x18\x05 \x01(\fR\x04body2\x93\x04\n" +
+	"\x04body\x18\x05 \x01(\fR\x04body2\xf2\x05\n" +
 	"\x05Turnd\x12?\n" +
 	"\vCredentials\x12\x1b.turn.v1.CredentialsRequest\x1a\x13.turn.v1.IceServers\x12K\n" +
 	"\fRenewSession\x12\x1c.turn.v1.RenewSessionRequest\x1a\x1d.turn.v1.RenewSessionResponse\x12E\n" +
@@ -799,7 +1078,11 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x05Admit\x12\x16.turn.v1.DecideRequest\x1a\f.turn.v1.Ack\x12,\n" +
 	"\x04Deny\x12\x16.turn.v1.DecideRequest\x1a\f.turn.v1.Ack\x128\n" +
 	"\x0fRoomCredentials\x12\x10.turn.v1.RoomRef\x1a\x13.turn.v1.IceServers\x12+\n" +
-	"\tCloseRoom\x12\x10.turn.v1.RoomRef\x1a\f.turn.v1.Ack\x120\n" +
+	"\tCloseRoom\x12\x10.turn.v1.RoomRef\x1a\f.turn.v1.Ack\x122\n" +
+	"\bHandOver\x12\x18.turn.v1.HandOverRequest\x1a\f.turn.v1.Ack\x125\n" +
+	"\rAppointCoHost\x12\x16.turn.v1.CoHostRequest\x1a\f.turn.v1.Ack\x124\n" +
+	"\fRevokeCoHost\x12\x16.turn.v1.CoHostRequest\x1a\f.turn.v1.Ack\x12<\n" +
+	"\aReclaim\x12\x17.turn.v1.ReclaimRequest\x1a\x18.turn.v1.ReclaimResponse\x120\n" +
 	"\x04Room\x12\x11.turn.v1.Envelope\x1a\x11.turn.v1.Envelope(\x010\x01B.Z,github.com/go-turn/turn/proto/turn/v1;turnv1b\x06proto3"
 
 var (
@@ -814,7 +1097,7 @@ func file_turn_v1_turnd_proto_rawDescGZIP() []byte {
 	return file_turn_v1_turnd_proto_rawDescData
 }
 
-var file_turn_v1_turnd_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_turn_v1_turnd_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_turn_v1_turnd_proto_goTypes = []any{
 	(*CredentialsRequest)(nil),   // 0: turn.v1.CredentialsRequest
 	(*RenewSessionRequest)(nil),  // 1: turn.v1.RenewSessionRequest
@@ -825,13 +1108,17 @@ var file_turn_v1_turnd_proto_goTypes = []any{
 	(*JoinRoomResponse)(nil),     // 6: turn.v1.JoinRoomResponse
 	(*DecideRequest)(nil),        // 7: turn.v1.DecideRequest
 	(*RoomRef)(nil),              // 8: turn.v1.RoomRef
-	(*Ack)(nil),                  // 9: turn.v1.Ack
-	(*IceServers)(nil),           // 10: turn.v1.IceServers
-	(*IceServer)(nil),            // 11: turn.v1.IceServer
-	(*Envelope)(nil),             // 12: turn.v1.Envelope
+	(*HandOverRequest)(nil),      // 9: turn.v1.HandOverRequest
+	(*CoHostRequest)(nil),        // 10: turn.v1.CoHostRequest
+	(*ReclaimRequest)(nil),       // 11: turn.v1.ReclaimRequest
+	(*ReclaimResponse)(nil),      // 12: turn.v1.ReclaimResponse
+	(*Ack)(nil),                  // 13: turn.v1.Ack
+	(*IceServers)(nil),           // 14: turn.v1.IceServers
+	(*IceServer)(nil),            // 15: turn.v1.IceServer
+	(*Envelope)(nil),             // 16: turn.v1.Envelope
 }
 var file_turn_v1_turnd_proto_depIdxs = []int32{
-	11, // 0: turn.v1.IceServers.ice_servers:type_name -> turn.v1.IceServer
+	15, // 0: turn.v1.IceServers.ice_servers:type_name -> turn.v1.IceServer
 	0,  // 1: turn.v1.Turnd.Credentials:input_type -> turn.v1.CredentialsRequest
 	1,  // 2: turn.v1.Turnd.RenewSession:input_type -> turn.v1.RenewSessionRequest
 	3,  // 3: turn.v1.Turnd.CreateRoom:input_type -> turn.v1.CreateRoomRequest
@@ -840,18 +1127,26 @@ var file_turn_v1_turnd_proto_depIdxs = []int32{
 	7,  // 6: turn.v1.Turnd.Deny:input_type -> turn.v1.DecideRequest
 	8,  // 7: turn.v1.Turnd.RoomCredentials:input_type -> turn.v1.RoomRef
 	8,  // 8: turn.v1.Turnd.CloseRoom:input_type -> turn.v1.RoomRef
-	12, // 9: turn.v1.Turnd.Room:input_type -> turn.v1.Envelope
-	10, // 10: turn.v1.Turnd.Credentials:output_type -> turn.v1.IceServers
-	2,  // 11: turn.v1.Turnd.RenewSession:output_type -> turn.v1.RenewSessionResponse
-	4,  // 12: turn.v1.Turnd.CreateRoom:output_type -> turn.v1.CreateRoomResponse
-	6,  // 13: turn.v1.Turnd.JoinRoom:output_type -> turn.v1.JoinRoomResponse
-	9,  // 14: turn.v1.Turnd.Admit:output_type -> turn.v1.Ack
-	9,  // 15: turn.v1.Turnd.Deny:output_type -> turn.v1.Ack
-	10, // 16: turn.v1.Turnd.RoomCredentials:output_type -> turn.v1.IceServers
-	9,  // 17: turn.v1.Turnd.CloseRoom:output_type -> turn.v1.Ack
-	12, // 18: turn.v1.Turnd.Room:output_type -> turn.v1.Envelope
-	10, // [10:19] is the sub-list for method output_type
-	1,  // [1:10] is the sub-list for method input_type
+	9,  // 9: turn.v1.Turnd.HandOver:input_type -> turn.v1.HandOverRequest
+	10, // 10: turn.v1.Turnd.AppointCoHost:input_type -> turn.v1.CoHostRequest
+	10, // 11: turn.v1.Turnd.RevokeCoHost:input_type -> turn.v1.CoHostRequest
+	11, // 12: turn.v1.Turnd.Reclaim:input_type -> turn.v1.ReclaimRequest
+	16, // 13: turn.v1.Turnd.Room:input_type -> turn.v1.Envelope
+	14, // 14: turn.v1.Turnd.Credentials:output_type -> turn.v1.IceServers
+	2,  // 15: turn.v1.Turnd.RenewSession:output_type -> turn.v1.RenewSessionResponse
+	4,  // 16: turn.v1.Turnd.CreateRoom:output_type -> turn.v1.CreateRoomResponse
+	6,  // 17: turn.v1.Turnd.JoinRoom:output_type -> turn.v1.JoinRoomResponse
+	13, // 18: turn.v1.Turnd.Admit:output_type -> turn.v1.Ack
+	13, // 19: turn.v1.Turnd.Deny:output_type -> turn.v1.Ack
+	14, // 20: turn.v1.Turnd.RoomCredentials:output_type -> turn.v1.IceServers
+	13, // 21: turn.v1.Turnd.CloseRoom:output_type -> turn.v1.Ack
+	13, // 22: turn.v1.Turnd.HandOver:output_type -> turn.v1.Ack
+	13, // 23: turn.v1.Turnd.AppointCoHost:output_type -> turn.v1.Ack
+	13, // 24: turn.v1.Turnd.RevokeCoHost:output_type -> turn.v1.Ack
+	12, // 25: turn.v1.Turnd.Reclaim:output_type -> turn.v1.ReclaimResponse
+	16, // 26: turn.v1.Turnd.Room:output_type -> turn.v1.Envelope
+	14, // [14:27] is the sub-list for method output_type
+	1,  // [1:14] is the sub-list for method input_type
 	1,  // [1:1] is the sub-list for extension type_name
 	1,  // [1:1] is the sub-list for extension extendee
 	0,  // [0:1] is the sub-list for field type_name
@@ -868,7 +1163,7 @@ func file_turn_v1_turnd_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_turn_v1_turnd_proto_rawDesc), len(file_turn_v1_turnd_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

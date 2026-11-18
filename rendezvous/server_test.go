@@ -239,7 +239,8 @@ func TestCreateNeedsSession(t *testing.T) {
 		}
 	}
 	c := f.create("alice")
-	if len(c.Room) != 32 || c.Peer != "host" || c.Token == "" || c.Expires != base.Add(time.Hour).Unix() {
+	if len(c.Room) != 32 || c.Peer != "g1" || // an ordinary ID: no peer is ever named "host"
+		c.Token == "" || c.Expires != base.Add(time.Hour).Unix() {
 		t.Fatalf("%+v", c)
 	}
 	if d := f.create("alice"); d.Room == c.Room || d.Token == c.Token {
@@ -260,7 +261,7 @@ func TestRoutingAndEvents(t *testing.T) {
 	c := f.create("alice")
 	host := f.open(c.Room, c.Token)
 	g1, g2 := f.join(c.Room), f.join(c.Room)
-	if g1.Peer == g2.Peer || g1.Token == g2.Token || g1.Host != "host" {
+	if g1.Peer == g2.Peer || g1.Token == g2.Token || g1.Host != c.Peer || g1.Peer == "host" || g2.Peer == "host" {
 		t.Fatalf("%+v %+v", g1, g2)
 	}
 	for _, g := range []*turnv1.JoinRoomResponse{g1, g2} {
@@ -276,25 +277,30 @@ func TestRoutingAndEvents(t *testing.T) {
 	}
 	s2.next(t)
 	s1.send(g1.Peer, "host", "answer", []byte("sdp-1"))
-	if e := host.next(t); e.Kind != "answer" || string(e.Body) != "sdp-1" || e.From != g1.Peer || e.To != "host" || e.Seq == 0 {
+	if e := host.next(t); e.Kind != "answer" || string(e.Body) != "sdp-1" || e.From != g1.Peer || e.To != c.Peer || e.Seq == 0 {
 		t.Fatalf("%v", e)
 	}
-	host.send("host", g2.Peer, "offer", []byte("sdp-2"))
-	if e := s2.next(t); e.Kind != "offer" || string(e.Body) != "sdp-2" || e.From != "host" {
+	host.send(c.Peer, g2.Peer, "offer", []byte("sdp-2"))
+	if e := s2.next(t); e.Kind != "offer" || string(e.Body) != "sdp-2" || e.From != c.Peer {
 		t.Fatalf("%v", e)
 	}
 	s1.nothing(t) // guest 1 never sees guest 2's message
 
 	// the other peer's state is not the sender's fault: sys.error, stream stays open
-	host.send("host", "g99", "x", nil)
+	host.send(c.Peer, "g99", "x", nil)
 	if e := host.next(t); e.Kind != "sys.error" || !strings.HasPrefix(string(e.Body), "NotFound: ") {
 		t.Fatalf("%v", e)
 	}
-	host.send("host", "host", "x", nil)
+	host.send(c.Peer, c.Peer, "x", nil)
 	if e := host.next(t); e.Kind != "sys.error" {
 		t.Fatalf("to self: %v", e)
 	}
-	host.send("host", g1.Peer, "offer", []byte("still open"))
+	// the alias is the address of the host: the host using it is addressing itself
+	host.send(c.Peer, "host", "x", nil)
+	if e := host.next(t); e.Kind != "sys.error" || !strings.HasPrefix(string(e.Body), "InvalidArgument: ") {
+		t.Fatalf("host to \"host\": %v", e)
+	}
+	host.send(c.Peer, g1.Peer, "offer", []byte("still open"))
 	if e := s1.next(t); string(e.Body) != "still open" {
 		t.Fatalf("%v", e)
 	}
@@ -310,8 +316,9 @@ func TestProtocolViolationsEndTheStream(t *testing.T) {
 		from, to, kd string
 		want         codes.Code
 	}{
-		{"spoofed from", "host", "host", "x", codes.PermissionDenied},
-		{"guest to guest", "SELF", "g1", "x", codes.PermissionDenied},
+		{"spoofed from", "g1", "host", "x", codes.PermissionDenied},
+		{"the old peer ID of the host", "host", "host", "x", codes.PermissionDenied}, // a v0.6 client
+		{"guest to guest", "SELF", "g99", "x", codes.PermissionDenied},
 		{"system kind", "SELF", "host", "sys.join", codes.InvalidArgument},
 		{"empty kind", "SELF", "host", "", codes.InvalidArgument},
 		{"upper-case kind", "SELF", "host", "Offer", codes.InvalidArgument},
@@ -549,7 +556,8 @@ func TestCredentials(t *testing.T) {
 }
 
 func TestLeaveByEndingTheStream(t *testing.T) {
-	f := newFix(t, nil)
+	// HostGrace < 0 is the behaviour before the grace period existed.
+	f := newFix(t, func(c *Config) { c.Limits.HostGrace = -1 })
 	c := f.create("alice")
 	g := f.join(c.Room)
 	host := f.open(c.Room, c.Token)
