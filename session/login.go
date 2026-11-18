@@ -40,6 +40,12 @@ type LoginConfig struct {
 	FlowTTL  time.Duration
 	MaxFlows int
 	Now      func() time.Time
+	// Logf receives one line per callback outcome: the pseudonymous subject
+	// on success, the reason on a refusal, never a code, token or cookie.
+	// Without it the operator cannot tell a login that worked from one that
+	// failed: the popup shows the same "You can close this window" for both
+	// when it has no opener. Nil logs nothing.
+	Logf func(format string, args ...any)
 }
 
 // Login serves /login and /callback.
@@ -79,6 +85,9 @@ func NewLogin(cfg LoginConfig) (*Login, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Logf == nil {
+		cfg.Logf = func(string, ...any) {}
 	}
 	return &Login{cfg: cfg, flows: map[string]flow{}}, nil
 }
@@ -137,25 +146,32 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	delete(l.flows, state) // single use, whatever follows
 	l.mu.Unlock()
 	if !ok || !fl.expires.After(l.cfg.Now()) {
+		l.cfg.Logf("login refused: unknown or expired flow")
 		http.Error(w, "login expired or unknown; start again", http.StatusBadRequest)
 		return
 	}
 	c, err := r.Cookie(cookieName)
 	if err != nil {
+		l.cfg.Logf("login refused: no flow cookie (not started in this browser)")
 		http.Error(w, "login not started in this browser", http.StatusBadRequest)
 		return
 	}
 	sum := sha256.Sum256([]byte(c.Value))
 	if subtle.ConstantTimeCompare(sum[:], fl.bind[:]) != 1 {
+		l.cfg.Logf("login refused: flow cookie does not match (not started in this browser)")
 		http.Error(w, "login not started in this browser", http.StatusBadRequest)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/callback", MaxAge: -1, HttpOnly: true, Secure: l.cfg.Secure, SameSite: http.SameSiteLaxMode})
-	if q.Get("error") != "" {
+	if e := q.Get("error"); e != "" {
+		// The provider's error code is text from the request: quoted and cut,
+		// so it cannot forge a log line.
+		l.cfg.Logf("login refused by the provider: %.64q", e)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "access_denied"})
 		return
 	}
 	if err := l.cfg.Client.CheckIssuer(q); err != nil || q.Get("code") == "" {
+		l.cfg.Logf("login refused: issuer check or missing code: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
@@ -163,14 +179,18 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	_, id, err := l.cfg.Client.Exchange(ctx, q.Get("code"), fl.f)
 	if err != nil || id == nil {
+		l.cfg.Logf("login refused: code exchange: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
-	tok, exp, err := l.cfg.Signer.Issue(Subject(id.Issuer(), id.Subject()), l.cfg.Now())
+	subject := Subject(id.Issuer(), id.Subject())
+	tok, exp, err := l.cfg.Signer.Issue(subject, l.cfg.Now())
 	if err != nil {
+		l.cfg.Logf("login refused: issuing the session: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
+	l.cfg.Logf("login: session issued to %s for origin %s, until %s", subject, fl.origin, exp.UTC().Format(time.RFC3339))
 	l.page(w, fl.origin, message{Type: "turnd-session", Token: tok, Expires: exp.Unix()})
 }
 
