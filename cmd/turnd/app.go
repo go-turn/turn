@@ -51,11 +51,15 @@ type config struct {
 	OtelTokenFile string
 }
 
+// Export intervals; tests shorten them. Zero keeps the SDK defaults.
+var otelMetricInterval, otelBatchInterval time.Duration
+
 // setupTelemetry reads the collector token, starts the pipeline and builds the
 // logger: JSON on logw, exported over OTLP too when telemetry is on.
 func setupTelemetry(ctx context.Context, cfg *config, logw io.Writer) (*telemetry.Telemetry, *slog.Logger, error) {
 	tc := cfg.Otel
 	tc.Version = version
+	tc.MetricInterval, tc.BatchInterval = otelMetricInterval, otelBatchInterval
 	if cfg.OtelTokenFile != "" {
 		b, err := readSecretFile(cfg.OtelTokenFile)
 		if err != nil {

@@ -56,6 +56,9 @@ type Config struct {
 	Version string
 	// MetricInterval is how often metrics are pushed (default 60 s).
 	MetricInterval time.Duration
+	// BatchInterval is how often spans and log records are flushed (the SDK
+	// defaults: 5 s for spans, 1 s for logs). Zero keeps them; tests shorten it.
+	BatchInterval time.Duration
 }
 
 // DefaultConfig holds the defaults of every flag.

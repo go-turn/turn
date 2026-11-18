@@ -144,8 +144,14 @@ func Setup(ctx context.Context, cfg Config, warn func(string)) (*Telemetry, erro
 		return nil, fmt.Errorf("telemetry: exporter: %w", err)
 	}
 
+	var bopts []sdktrace.BatchSpanProcessorOption
+	var lopts []sdklog.BatchProcessorOption
+	if cfg.BatchInterval > 0 {
+		bopts = append(bopts, sdktrace.WithBatchTimeout(cfg.BatchInterval))
+		lopts = append(lopts, sdklog.WithExportInterval(cfg.BatchInterval))
+	}
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(scrubExporter{spanExp}),
+		sdktrace.WithBatcher(scrubExporter{spanExp}, bopts...),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRatio))),
 	)
@@ -156,7 +162,7 @@ func Setup(ctx context.Context, cfg Config, warn func(string)) (*Telemetry, erro
 		sdkmetric.WithView(sdkmetric.NewView(sdkmetric.Instrument{Name: "*"}, sdkmetric.Stream{AttributeFilter: deny})),
 	)
 	lp := sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp, lopts...)),
 		sdklog.WithResource(res),
 	)
 	t.tp, t.mp = tp, mp

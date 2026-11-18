@@ -68,9 +68,10 @@ var (
 // class names why a peer address is refused, for Observer.
 func (p *policy) class(a netip.Addr) string {
 	a = norm(a)
+	// The address's own nature comes first: 127.0.0.1 is also an address of
+	// this host, but "loopback" is the more useful answer. "own_address" is
+	// the server's other addresses (its public one, say).
 	switch {
-	case p.ownRestricted(a):
-		return "own_address"
 	case a.IsLoopback():
 		return "loopback"
 	case a == metadataAddrs[0] || a == metadataAddrs[1]:
@@ -88,6 +89,9 @@ func (p *policy) class(a netip.Addr) string {
 		if pr.Contains(a) {
 			return "translator"
 		}
+	}
+	if p.ownRestricted(a) {
+		return "own_address"
 	}
 	return "reserved"
 }
