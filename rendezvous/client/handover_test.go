@@ -20,6 +20,30 @@ const grace = 400 * time.Millisecond
 
 func shortGrace(c *rendezvous.Config) { c.Limits.HostGrace = grace }
 
+// lostObserver tells when the server has seen a host's stream end. A message
+// sent to a host in the instant BEFORE that is written to a dead connection and
+// is lost with it (nothing can tell the sender): the tests of the outage window
+// start after it.
+type lostObserver struct{ lost chan struct{} }
+
+func (o lostObserver) Event(_ context.Context, action, outcome string) {
+	if action == "host_lost" {
+		select {
+		case o.lost <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (o lostObserver) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-o.lost:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never saw the host's stream end")
+	}
+}
+
 // until reads r's events until one is of kind.
 func until(t *testing.T, r *client.Room, kind string) client.Event {
 	t.Helper()
@@ -78,7 +102,8 @@ func admitted(t *testing.T, base string, host *client.Room, name string, opts ..
 func TestHostKilledThenPromotionThenNewcomerAndRouting(t *testing.T) {
 	for _, n := range []int{2, 3} { // 3 and 4 people: the host and 2 or 3 guests
 		t.Run(fmt.Sprintf("%d people", n+1), func(t *testing.T) {
-			base := server(t, shortGrace)
+			obs := lostObserver{make(chan struct{}, 1)}
+			base := server(t, func(c *rendezvous.Config) { shortGrace(c); c.Observer = obs })
 			host, kill := killedHost(t, base)
 			var guests []*client.Room
 			for i := 0; i < n; i++ {
@@ -94,8 +119,8 @@ func TestHostKilledThenPromotionThenNewcomerAndRouting(t *testing.T) {
 				t.Fatalf("%v", e)
 			}
 			kill()
-			// no one sends anything to a dead host without losing it: the guests
-			// write during the outage
+			obs.wait(t)
+			// the guests write during the outage: queued for the host, carried on
 			for i, g := range guests {
 				for k := 0; k < 3; k++ {
 					if err := g.Send(ctx(t), "host", "update", []byte(fmt.Sprintf("%d-%d", i, k))); err != nil {
@@ -174,10 +199,12 @@ func TestHostKilledThenPromotionThenNewcomerAndRouting(t *testing.T) {
 }
 
 func TestHostBackWithinGraceIsNotReplaced(t *testing.T) {
-	base := server(t, func(c *rendezvous.Config) { c.Limits.HostGrace = 5 * time.Second })
+	obs := lostObserver{make(chan struct{}, 1)}
+	base := server(t, func(c *rendezvous.Config) { c.Limits.HostGrace = 5 * time.Second; c.Observer = obs })
 	host, kill := killedHost(t, base)
 	g := admitted(t, base, host, "bob")
 	kill()
+	obs.wait(t)
 	if err := g.Send(ctx(t), "host", "update", []byte("while-away")); err != nil {
 		t.Fatal(err)
 	}

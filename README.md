@@ -123,6 +123,10 @@ behaviour, the host leaving closes the room).
   subject (new host token, the old one dead), or simply a new `Room` stream with
   its own token. Messages sent to `"host"` meanwhile wait in its queue (the usual
   `--max-queue`; past it the sender gets `sys.error`) and are delivered on return.
+  What can still be lost, and only this: a message the server wrote to the old
+  host's connection before it noticed that the connection was dead (the
+  rendezvous cannot know; the collab layer's rejoin with a version vector covers
+  it).
 - *Past the grace*, or when the host calls `HandOver{room,to}` first, the
   **earliest-admitted guest still connected** becomes the host (no version-vector
   election: the collab layer reconciles in both directions on rejoin). A
