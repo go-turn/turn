@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/go-turn/turn/server"
 )
@@ -25,6 +26,10 @@ type relayOptions struct {
 	// ProxyFrom lists the prefixes (--proxy-protocol-from) whose TCP and TLS
 	// connections carry a PROXY protocol header; empty is off.
 	ProxyFrom []string
+	// MaxAllocationAge (--max-allocation-age) bounds how long an allocation may
+	// be kept alive, past the expiry of its credential included; zero is the
+	// server's default (12 h).
+	MaxAllocationAge time.Duration
 }
 
 func (o relayOptions) proxyPrefixes() ([]netip.Prefix, error) {
@@ -67,6 +72,9 @@ func (o relayOptions) validate(tlsCert, tlsKey string) error {
 	if o.TURNSListen != "" && (tlsCert == "" || tlsKey == "") {
 		return errors.New("--turns-listen needs --tls-cert-file and --tls-key-file")
 	}
+	if o.MaxAllocationAge < 0 {
+		return errors.New("--max-allocation-age must not be negative")
+	}
 	if o.PortMin > 65535 || o.PortMax > 65535 || o.PortMax < o.PortMin {
 		return errors.New("--relay-port-min/--relay-port-max: want 0 <= min <= max <= 65535")
 	}
@@ -81,11 +89,13 @@ func runRelay(ctx context.Context, rc relayConfig) (func(), error) {
 		return func() {}, nil
 	}
 	cfg := server.Config{
-		Realm:        rc.Realm,
-		Auth:         rc.Auth,
-		RelayIP:      netip.MustParseAddr(o.RelayIP),
-		RelayPortMin: uint16(o.PortMin),
-		RelayPortMax: uint16(o.PortMax),
+		Realm:            rc.Realm,
+		Auth:             rc.Auth,
+		AuthExisting:     rc.AuthExisting,
+		MaxAllocationAge: o.MaxAllocationAge,
+		RelayIP:          netip.MustParseAddr(o.RelayIP),
+		RelayPortMin:     uint16(o.PortMin),
+		RelayPortMax:     uint16(o.PortMax),
 	}
 	if o.RelayAdvertiseIP != "" {
 		cfg.RelayAdvertiseIP = netip.MustParseAddr(o.RelayAdvertiseIP)

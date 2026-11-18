@@ -142,6 +142,15 @@ func (s *Server) authenticate(tr transport, from netip.AddrPort, m *stun.Message
 		return creds{}, false
 	}
 	pw, ok := s.cfg.Auth(user)
+	if !ok && s.cfg.AuthExisting != nil && m.Method != stun.MethodAllocate {
+		// An expired username may keep ITS OWN allocation alive (RFC 8656 section
+		// 5: the same credentials); the MESSAGE-INTEGRITY check below still
+		// proves the client holds the password derived from it.
+		if a := s.lookup(fiveTuple{from, tr.local(), tr.proto()}); a != nil && a.user == user &&
+			s.cfg.Now().Sub(a.created) < s.cfg.MaxAllocationAge {
+			pw, ok = s.cfg.AuthExisting(user)
+		}
+	}
 	if !ok || realm != s.cfg.Realm {
 		s.fail(tr, from, m, stun.CodeUnauthenticated, "Unauthenticated", true)
 		return creds{}, false
@@ -348,7 +357,7 @@ func (s *Server) handleAllocate(tr transport, from netip.AddrPort, m *stun.Messa
 	local := ap(relay.LocalAddr().(*net.UDPAddr).AddrPort())
 	now := s.cfg.Now()
 	a := &allocation{
-		s: s, key: key, user: c.user, tr: tr, client: from,
+		s: s, key: key, user: c.user, created: now, tr: tr, client: from,
 		relay:     relay,
 		relayAddr: netip.AddrPortFrom(s.cfg.RelayAdvertiseIP, local.Port()),
 		expires:   now.Add(life),
@@ -386,6 +395,14 @@ func (s *Server) handleAllocate(tr transport, from netip.AddrPort, m *stun.Messa
 
 func (s *Server) handleRefresh(tr transport, from netip.AddrPort, m *stun.Message, c creds, a *allocation) {
 	life, set := s.lifetimeOf(m)
+	if s.cfg.Now().Sub(a.created) >= s.cfg.MaxAllocationAge && !(set && life == 0) {
+		// Past the age bound the allocation runs out its current lifetime; a
+		// client that wants more allocates again with a fresh username. Deleting
+		// (lifetime 0) stays allowed.
+		s.cfg.Logger.Debug("refresh refused: allocation too old", "user", c.user, "client", from)
+		s.fail(tr, from, m, stun.CodeForbidden, "Allocation Too Old", false)
+		return
+	}
 	if set && life == 0 {
 		s.ok(tr, from, m, c, func(r *stun.Message) { r.AddUint32(stun.AttrLifetime, 0) })
 		s.removeAlloc(a)

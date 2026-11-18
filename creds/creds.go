@@ -167,6 +167,29 @@ func (k *Keyring) Verify(username string, now time.Time) (password string, ok bo
 	return "", false
 }
 
+// Password derives the password of a well-formed username whose key tag names a
+// secret of the ring, WITHOUT checking the expiry. It is for a request on an
+// allocation that already exists: the HMAC in MESSAGE-INTEGRITY still proves
+// the username is ours, the expiry only governs who may START one. Callers
+// bound the extra life themselves (server.Config.MaxAllocationAge).
+func (k *Keyring) Password(username string) (password string, ok bool) {
+	_, subject, ok := Parse(username)
+	if !ok || len(subject) < 6 || subject[4] != '.' {
+		return "", false
+	}
+	for i, t := range k.tags {
+		if t == subject[:4] {
+			return password1(k.secrets[i], username), true
+		}
+	}
+	return "", false
+}
+
+// AuthExisting is [Keyring.Password] as the hook of server.Config.AuthExisting.
+func (k *Keyring) AuthExisting() func(username string) (string, bool) {
+	return k.Password
+}
+
 // Auth is the TURN server's credential hook, func(username) (password, ok),
 // reading the clock from now (time.Now when nil).
 func (k *Keyring) Auth(now func() time.Time) func(username string) (string, bool) {

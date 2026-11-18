@@ -150,6 +150,16 @@ on TCP and TLS connections from that prefix. Its credential hook is the
 keyring's `Auth`, so the minted `<expiry>:<tag>.<subject>` usernames are what the
 relay accepts (the tag says which of the rotating secrets signed it).
 
+A relayed call outlives the credential that opened it. A username is checked for
+expiry when it STARTS an allocation (Allocate); on an allocation that the same
+username created from the same 5-tuple, Refresh, CreatePermission and ChannelBind
+keep working after the expiry (`Config.AuthExisting`, the keyring's
+`AuthExisting`): the MESSAGE-INTEGRITY check still needs the password derived from
+the username, and another username on that allocation stays refused (RFC 8656
+section 5). `--max-allocation-age` (`Config.MaxAllocationAge`, default 12 h) bounds
+it: past that age a Refresh answers 403, and an expired username is no longer
+accepted. A new call needs a fresh credential.
+
 ## Deploying
 
 One host, one binary (`CGO_ENABLED=0 go install github.com/go-turn/turn/cmd/turnd@latest`).
