@@ -67,9 +67,13 @@ type daemon struct {
 // run starts turnd through RootCmd against a fake provider and stops it at the end of the test.
 func run(t *testing.T, extra ...string) *daemon {
 	t.Helper()
+	// The provider takes its port BEFORE turnd's is picked: the other order let
+	// the provider's listener reuse the port just freed, and turnd then failed
+	// with "address already in use" (seen on CI).
+	idp := fakeidp.New(t, "turnd", "client-s3cret", "")
 	port := freePort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	idp := fakeidp.New(t, "turnd", "client-s3cret", base+"/callback")
+	idp.Redirect = base + "/callback"
 	httpClient = idp.Client()
 	t.Cleanup(func() { httpClient = nil })
 	args := []string{"--issuer", idp.Issuer, "--client-id", "turnd",
