@@ -6,6 +6,11 @@
 // and guest to host. An admitted peer can get TURN credentials that expire with
 // the room, charged to the host's subject.
 //
+// The room outlives its host: when the host's stream ends it waits
+// [Limits.HostGrace] for the same person to come back ([Server.Reclaim]), then
+// promotes the earliest-admitted guest still connected, or does as the host says
+// ([Server.HandOver]). Peer IDs never change; everyone gets sys.host-changed.
+//
 // A leaked room link therefore lets a stranger knock, not enter: a pending guest
 // can receive and nothing else, it cannot send and it cannot spend the host's
 // TURN quota.

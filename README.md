@@ -67,8 +67,10 @@ with no `Origin` header is a native client. Only browser navigations stay HTTP:
 | `CreateRoom` | session or access token | `{room, peer:"host", token, expires}`; the room ID is 128 random bits |
 | `JoinRoom{room,name}` | none: the room ID | `{peer, host, token, expires, pending:true}`; the guest is **pending** |
 | `Admit{room,peer}` / `Deny{room,peer}` | host token | admit a pending guest / refuse it (or remove an admitted one): its token is dead |
-| `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the host |
+| `RoomCredentials{room}` | an **admitted** peer's token | `IceServers` expiring with the room, charged to the current host's person (see *A room outlives its host*) |
 | `CloseRoom{room}` | host token | ends the room |
+| `HandOver{room,to}` | host token | gives the host role to an admitted, connected guest; the old host's token is dead |
+| `Reclaim{room}` | a **session** token whose subject was the host's | `{peer, host, host_peer, token, expires}`: the host role back (new token), or, after a handover, an admitted guest with the SAME peer ID |
 | `Room(stream Envelope) returns (stream Envelope)` | peer token + `x-turn-room` metadata | the room's one stream: events down, messages up; ending it is leaving |
 
 **Renewing a session.** At `/callback` turnd asks the issuer for `openid
@@ -101,7 +103,8 @@ receives: it cannot send, cannot get credentials, counts against a separate
 pending cap and a pending TTL. The host sees `sys.knock` (`from` = the guest,
 `body` = its display name, at most 64 characters, no control characters) and
 decides; only admitted guests count against `--max-guests` and produce `sys.join`.
-Other system events: `sys.admitted`, `sys.denied`, `sys.leave`, `sys.closed`, and
+Other system events: `sys.admitted`, `sys.denied`, `sys.leave`, `sys.closed`,
+`sys.host-changed`, and
 `sys.error` (a message the other peer could not take; the stream stays open).
 A message that breaks the protocol (too large, a spoofed `from`, a bad kind, a
 pending sender, guest to guest) ends the sender's stream with a status:
@@ -110,12 +113,57 @@ pending sender, guest to guest) ends the sender's stream with a status:
 stream for one peer), `FAILED_PRECONDITION` (already admitted), `UNAVAILABLE`
 (server full).
 
+**A room outlives its host.** Collaboration is peer to peer, so a room must not
+die with the one browser that opened it. When the host's stream ends the room
+lives on for `--host-grace` (default `2m`; a negative value restores the old
+behaviour, the host leaving closes the room).
+
+- *Within the grace* the host back as the same person keeps the role, with
+  nothing changed for the others: `Reclaim` with a session token of the host's
+  subject (new host token, the old one dead), or simply a new `Room` stream with
+  its own token. Messages sent to `"host"` meanwhile wait in its queue (the usual
+  `--max-queue`; past it the sender gets `sys.error`) and are delivered on return.
+- *Past the grace*, or when the host calls `HandOver{room,to}` first, the
+  **earliest-admitted guest still connected** becomes the host (no version-vector
+  election: the collab layer reconciles in both directions on rejoin). A
+  pending, denied or disconnected guest is never promoted; if nobody qualifies the
+  room closes (`promote` / `failed_precondition`). A guest cannot promote itself
+  and a non-host cannot `HandOver` (`PERMISSION_DENIED`); to a pending guest it is
+  `FAILED_PRECONDITION`, to a stranger `NOT_FOUND`. The role moves under the
+  server's lock: there is exactly one host at any moment, whatever races.
+- *What changes.* The promoted peer keeps its peer ID and its token (so the site
+  identity a collab layer derives from the peer ID is stable) and gains the host's
+  powers: `Admit`, `Deny`, `HandOver`, `CloseRoom`. Every peer, the old host
+  included, receives `sys.host-changed` with body `{"from":"<peer>","to":"<peer>"}`.
+  The new host is told again about the room: `sys.knock` for each pending guest,
+  `sys.join` for each admitted one, then the messages that were queued for the old
+  host, in order (the guests' messages sent to `"host"` during the outage are not
+  dropped). `"host"` as the destination of a guest always means the current host.
+  The room's TTL is **never** extended.
+- *Who pays.* `RoomCredentials` are charged to the current host's person if it
+  said who it is when it knocked (`x-turn-session` metadata, `client.WithSession`),
+  else to the person who opened the room, until the TTL.
+- *The old host returns after a promotion* with `Reclaim` and the same session:
+  it keeps its peer ID (`"host"`) and is an **admitted** guest of the new host (no
+  knock; the new host sees `sys.join`), with a new token and the lowest priority
+  among the guests. Its old token stays dead.
+- *What the collab layer does on `sys.host-changed`.* The new host starts its
+  `collab.Server` seeded from its own replica; the others rejoin it through the
+  rendezvous with their version vector (a rejoin syncs both ways, so a guest that
+  is ahead of the new host pushes what it holds). In peer-to-peer mode nothing may
+  purge history, or a purged replica could not serve a rejoin.
+
+New observer actions (and `turnd.rendezvous.operations` actions): `hand_over`,
+`reclaim`, and the two with no RPC, `host_lost` (the grace starts) and `promote`
+(the grace ended); never a token, room, peer or name.
+
 The credential scheme is
 [draft-uberti-behave-turn-rest-00](https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00).
 The Go client, for the browser and native, is
 `github.com/go-turn/turn/rendezvous/client`: `Create`, `Join(name)` (blocks until
-admitted, `ErrDenied` otherwise), `Admit`, `Deny`, `Send`, `Recv`, `Credentials`,
-`Close`. It is a real grpc-go client dialed over the browser's WebSocket through
+admitted, `ErrDenied` otherwise; `WithSession(token)` says who the guest is),
+`Admit`, `Deny`, `Send`, `Recv`, `Credentials`, `Close`, and for the handover
+`HandOver`, `Reclaim`, `IsHost`, `CurrentHost` and `Event.HostChange`. It is a real grpc-go client dialed over the browser's WebSocket through
 `syscall/js`; it adds about 16 MB to a wasm binary (3.5 MB more gzipped), almost
 all of it grpc. go-crdt/collab's js/wasm build does not link grpc, so a page that
 does not otherwise ship it should load this client in a separate wasm, fetched

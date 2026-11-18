@@ -99,7 +99,10 @@ type TurndClient interface {
 	// the peer, system events included; the peer sends messages, routed host to
 	// guest and guest to host (never guest to guest). A pending guest may not send.
 	// Ending the stream (either side cancelling or half-closing) means leaving:
-	// a guest leaves, the host's leaving closes the room.
+	// a guest leaves; the host's leaving starts the grace period (turnd
+	// --host-grace, 2 minutes), after which a guest is promoted (see HandOver and
+	// Reclaim), or the room closes when none can be. A host that reopens the
+	// stream with its own token within the grace period is the host still.
 	Room(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Envelope, Envelope], error)
 }
 
@@ -273,7 +276,10 @@ type TurndServer interface {
 	// the peer, system events included; the peer sends messages, routed host to
 	// guest and guest to host (never guest to guest). A pending guest may not send.
 	// Ending the stream (either side cancelling or half-closing) means leaving:
-	// a guest leaves, the host's leaving closes the room.
+	// a guest leaves; the host's leaving starts the grace period (turnd
+	// --host-grace, 2 minutes), after which a guest is promoted (see HandOver and
+	// Reclaim), or the room closes when none can be. A host that reopens the
+	// stream with its own token within the grace period is the host still.
 	Room(grpc.BidiStreamingServer[Envelope, Envelope]) error
 	mustEmbedUnimplementedTurndServer()
 }
