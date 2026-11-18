@@ -142,6 +142,10 @@ func RenewSessionConn(ctx context.Context, cc *grpc.ClientConn, token string) (S
 	return Session{Token: r.GetToken(), Expires: time.Unix(r.GetExpires(), 0)}, nil
 }
 
+// retryUnavailable is the wait before KeepRenewed retries an Unavailable answer
+// (a variable for tests).
+var retryUnavailable = 30 * time.Second
+
 // KeepRenewed renews cur ahead of its expiry until ctx ends, and calls update
 // with every new session (store the token, use it for the next call). It
 // renews when `lead` (default 5 minutes) of the lifetime is left, retries an
@@ -175,7 +179,7 @@ func KeepRenewed(ctx context.Context, cur Session, lead time.Duration, renew fun
 			if status.Code(err) != codes.Unavailable {
 				return err
 			}
-			wait = 30 * time.Second
+			wait = retryUnavailable
 		}
 	}
 }
