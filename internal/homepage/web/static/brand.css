@@ -1,0 +1,17 @@
+/* The accent of go-turn (the rose of its mark), as the --brand* custom
+ * properties app.css reads. Ink on the page background reaches AA (4.5:1) in
+ * both schemes: #be123c on #f8fafc, #fb7185 on #12151a. */
+:root {
+	--brand: #be123c;
+	--brand-hover: #9f1239;
+	--brand-on: #ffffff;
+	--brand-ink: #be123c;
+}
+@media (prefers-color-scheme: dark) {
+	:root:not(.light) {
+		--brand-ink: #fb7185;
+	}
+}
+:root.dark {
+	--brand-ink: #fb7185;
+}

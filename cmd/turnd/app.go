@@ -18,6 +18,7 @@ import (
 	"github.com/go-authn/oidc"
 	"github.com/go-authn/rp"
 	"github.com/go-turn/turn/creds"
+	"github.com/go-turn/turn/internal/homepage"
 	"github.com/go-turn/turn/rendezvous"
 	"github.com/go-turn/turn/server"
 	"github.com/go-turn/turn/session"
@@ -357,6 +358,11 @@ func newApp(ctx context.Context, cfg config, logger *slog.Logger, tel *telemetry
 	login.Mount(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
 	mux.Handle(GRPCPath, h)
+	home, err := homepage.New(homeConfig(cfg))
+	if err != nil {
+		return nil, err
+	}
+	home.Mount(mux)
 	return &app{Handler: mux, ring: ring, rv: rv, secure: secure, gs: gs, lis: lis}, nil
 }
 
