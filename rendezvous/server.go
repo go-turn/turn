@@ -98,6 +98,12 @@ func (l *Limits) defaults() {
 type Config struct {
 	// Auth returns the subject of a session or access token (host operations).
 	Auth func(ctx context.Context, token string) (subject string, err error)
+	// Renew trades a session token (valid, or expired within a grace it
+	// enforces) for a new one: the RenewSession call. It returns
+	// [ErrSessionEnded] when the session cannot be renewed (the person signs in
+	// again) and [ErrSessionUnavailable] when the identity provider could not be
+	// asked (the session is intact). Nil: RenewSession is UNIMPLEMENTED.
+	Renew func(ctx context.Context, token string) (token2 string, expiry time.Time, err error)
 	// Keyring signs the TURN credentials.
 	Keyring *creds.Keyring
 	// STUN and TURN are the URLs advertised in credential responses.
@@ -238,6 +244,32 @@ func bearer(ctx context.Context) string {
 }
 
 var errUnauth = status.Error(codes.Unauthenticated, "unauthorized")
+
+// ErrSessionEnded and ErrSessionUnavailable are what Config.Renew answers.
+var (
+	ErrSessionEnded       = errors.New("rendezvous: session cannot be renewed")
+	ErrSessionUnavailable = errors.New("rendezvous: identity provider unavailable")
+)
+
+// RenewSession implements turn.v1.Turnd.
+func (s *Server) RenewSession(ctx context.Context, _ *turnv1.RenewSessionRequest) (*turnv1.RenewSessionResponse, error) {
+	if s.cfg.Renew == nil {
+		return nil, status.Error(codes.Unimplemented, "session renewal is off")
+	}
+	tok := bearer(ctx)
+	if tok == "" {
+		return nil, errUnauth
+	}
+	nt, exp, err := s.cfg.Renew(ctx, tok)
+	switch {
+	case err == nil && nt != "":
+		return &turnv1.RenewSessionResponse{Token: nt, Expires: exp.Unix()}, nil
+	case errors.Is(err, ErrSessionUnavailable):
+		return nil, status.Error(codes.Unavailable, "identity provider unavailable, retry")
+	default:
+		return nil, errUnauth
+	}
+}
 
 func (s *Server) subject(ctx context.Context) (string, error) {
 	tok := bearer(ctx)

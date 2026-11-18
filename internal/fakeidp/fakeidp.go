@@ -38,11 +38,92 @@ type IdP struct {
 	// BadNonce makes the ID token carry a nonce that is not the login's.
 	BadNonce bool
 
-	mu    sync.Mutex
-	codes map[string]grant
+	// Refresh makes the provider issue refresh tokens and honour the
+	// refresh_token grant, as bridge does with refresh_lifetime set: they ROTATE
+	// within a family, and a retired one presented again revokes the family.
+	// Set it with [IdP.SetRefresh] (the server reads it from other goroutines).
+	refresh bool
+	// refreshDelay slows every refresh_token request ([IdP.SetRefreshDelay]).
+	refreshDelay time.Duration
+
+	mu        sync.Mutex
+	codes     map[string]grant
+	live      map[string]string // current refresh token -> family
+	retired   map[string]string // retired refresh token -> family
+	revoked   map[string]bool   // families ended
+	lastScope string            // scope of the latest authorization request
+	refreshN  int               // refresh_token requests received
+	replayN   int               // retired tokens presented again
 }
 
 type grant struct{ challenge, nonce, redirect string }
+
+// SetRefresh turns refresh tokens on or off for the logins that follow.
+func (p *IdP) SetRefresh(on bool) { p.mu.Lock(); p.refresh = on; p.mu.Unlock() }
+
+// SetRefreshDelay slows every refresh_token request by d.
+func (p *IdP) SetRefreshDelay(d time.Duration) { p.mu.Lock(); p.refreshDelay = d; p.mu.Unlock() }
+
+func (p *IdP) refreshOn() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.refresh }
+
+// RevokeAll ends every refresh family: the account (or its passkey, or the
+// application session) was revoked at the provider. The next refresh is
+// invalid_grant.
+func (p *IdP) RevokeAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, fam := range p.live {
+		p.revoked[fam] = true
+	}
+	for _, fam := range p.retired {
+		p.revoked[fam] = true
+	}
+}
+
+// Refreshes is the number of refresh_token requests received; Replays, how many
+// of them presented a retired token.
+func (p *IdP) Refreshes() int { p.mu.Lock(); defer p.mu.Unlock(); return p.refreshN }
+func (p *IdP) Replays() int   { p.mu.Lock(); defer p.mu.Unlock(); return p.replayN }
+
+// LastScope is the scope of the latest authorization request.
+func (p *IdP) LastScope() string { p.mu.Lock(); defer p.mu.Unlock(); return p.lastScope }
+
+// LiveRefreshTokens is how many refresh tokens are current.
+func (p *IdP) LiveRefreshTokens() int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.live) }
+
+func (p *IdP) refreshGrant(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	d := p.refreshDelay
+	p.mu.Unlock()
+	time.Sleep(d)
+	rt := r.PostForm.Get("refresh_token")
+	p.mu.Lock()
+	p.refreshN++
+	fam, ok := p.live[rt]
+	if !ok {
+		if f, was := p.retired[rt]; was {
+			p.replayN++
+			p.revoked[f] = true
+		}
+		p.mu.Unlock()
+		tokenErr(w, "invalid_grant")
+		return
+	}
+	delete(p.live, rt)
+	if p.revoked[fam] {
+		p.retired[rt] = fam
+		p.mu.Unlock()
+		tokenErr(w, "invalid_grant")
+		return
+	}
+	p.retired[rt] = fam
+	next := randStr()
+	p.live[next] = fam
+	p.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"access_token": p.AccessToken(p.ClientID), "token_type": "Bearer",
+		"expires_in": 300, "refresh_token": next})
+}
 
 // New starts a provider for one confidential client.
 func New(t *testing.T, clientID, secret, redirect string) *IdP {
@@ -51,7 +132,8 @@ func New(t *testing.T, clientID, secret, redirect string) *IdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &IdP{t: t, key: k, ClientID: clientID, Secret: secret, Redirect: redirect, Subject: "alice-sub", codes: map[string]grant{}}
+	p := &IdP{t: t, key: k, ClientID: clientID, Secret: secret, Redirect: redirect, Subject: "alice-sub", codes: map[string]grant{},
+		live: map[string]string{}, retired: map[string]string{}, revoked: map[string]bool{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", p.discovery)
 	mux.HandleFunc("GET /jwks", p.jwks)
@@ -93,6 +175,7 @@ func (p *IdP) authorize(w http.ResponseWriter, r *http.Request) {
 	code := randStr()
 	p.mu.Lock()
 	p.codes[code] = grant{q.Get("code_challenge"), q.Get("nonce"), q.Get("redirect_uri")}
+	p.lastScope = q.Get("scope")
 	p.mu.Unlock()
 	v := url.Values{"code": {code}, "state": {q.Get("state")}, "iss": {p.Issuer}}
 	http.Redirect(w, r, q.Get("redirect_uri")+"?"+v.Encode(), http.StatusFound)
@@ -103,7 +186,15 @@ func (p *IdP) token(w http.ResponseWriter, r *http.Request) {
 	id, secret, basic := r.BasicAuth()
 	id, _ = url.QueryUnescape(id)
 	secret, _ = url.QueryUnescape(secret)
-	if !basic || id != p.ClientID || secret != p.Secret || r.PostForm.Get("grant_type") != "authorization_code" {
+	if !basic || id != p.ClientID || secret != p.Secret {
+		tokenErr(w, "invalid_client")
+		return
+	}
+	if p.refreshOn() && r.PostForm.Get("grant_type") == "refresh_token" {
+		p.refreshGrant(w, r)
+		return
+	}
+	if r.PostForm.Get("grant_type") != "authorization_code" {
 		tokenErr(w, "invalid_client")
 		return
 	}
@@ -121,8 +212,16 @@ func (p *IdP) token(w http.ResponseWriter, r *http.Request) {
 	}
 	idc := map[string]any{"iss": p.Issuer, "sub": p.Subject, "aud": p.ClientID, "nonce": nonce,
 		"preferred_username": "alice", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()}
-	_ = json.NewEncoder(w).Encode(map[string]any{"access_token": p.AccessToken(p.ClientID), "token_type": "Bearer",
-		"expires_in": 300, "id_token": p.sign("JWT", idc)})
+	out := map[string]any{"access_token": p.AccessToken(p.ClientID), "token_type": "Bearer",
+		"expires_in": 300, "id_token": p.sign("JWT", idc)}
+	if p.refreshOn() {
+		rt := randStr()
+		p.mu.Lock()
+		p.live[rt] = randStr() // a new family per login
+		p.mu.Unlock()
+		out["refresh_token"] = rt
+	}
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // AccessToken is an RFC 9068 access token (typ at+jwt) for audience aud.

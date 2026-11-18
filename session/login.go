@@ -40,6 +40,10 @@ type LoginConfig struct {
 	FlowTTL  time.Duration
 	MaxFlows int
 	Now      func() time.Time
+	// Renewer, when set, keeps the provider's refresh token of each login
+	// server side and issues renewable session tokens. A login that comes back
+	// without a refresh token still gets a session, one that cannot be renewed.
+	Renewer *Renewer
 	// Logf receives one line per callback outcome: the pseudonymous subject
 	// on success, the reason on a refusal, never a code, token or cookie.
 	// Without it the operator cannot tell a login that worked from one that
@@ -177,20 +181,36 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	_, id, err := l.cfg.Client.Exchange(ctx, q.Get("code"), fl.f)
+	pt, id, err := l.cfg.Client.Exchange(ctx, q.Get("code"), fl.f)
 	if err != nil || id == nil {
 		l.cfg.Logf("login refused: code exchange: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
 	subject := Subject(id.Issuer(), id.Subject())
-	tok, exp, err := l.cfg.Signer.Issue(subject, l.cfg.Now())
+	var tok string
+	var exp time.Time
+	renewable := false
+	if l.cfg.Renewer != nil && pt != nil && pt.RefreshToken != "" {
+		// The refresh token stays here; the browser gets a session token only.
+		if fam, ferr := l.cfg.Renewer.Open(subject, pt.RefreshToken); ferr == nil {
+			tok, exp, err = l.cfg.Signer.IssueRenewable(subject, fam, l.cfg.Now())
+			renewable = true
+		} else {
+			l.cfg.Logf("login: not renewable: %v", ferr)
+		}
+	} else if l.cfg.Renewer != nil {
+		l.cfg.Logf("login: the provider issued no refresh token (enable refresh_lifetime for this client): session not renewable")
+	}
+	if !renewable {
+		tok, exp, err = l.cfg.Signer.Issue(subject, l.cfg.Now())
+	}
 	if err != nil {
 		l.cfg.Logf("login refused: issuing the session: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
-	l.cfg.Logf("login: session issued to %s for origin %s, until %s", subject, fl.origin, exp.UTC().Format(time.RFC3339))
+	l.cfg.Logf("login: session issued to %s for origin %s, until %s, renewable: %t", subject, fl.origin, exp.UTC().Format(time.RFC3339), renewable)
 	l.page(w, fl.origin, message{Type: "turnd-session", Token: tok, Expires: exp.Unix()})
 }
 

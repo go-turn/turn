@@ -112,6 +112,78 @@ func HostCredentialsConn(ctx context.Context, cc *grpc.ClientConn, token string)
 	return toCreds(r), nil
 }
 
+// Session is a session token and when it expires.
+type Session struct {
+	Token   string
+	Expires time.Time
+}
+
+// RenewSession trades a session token, valid or just expired (turnd's grace is
+// 5 minutes), for a new one, without another login. A gRPC status of
+// Unauthenticated means it cannot be renewed (it predates renewal, turnd
+// restarted, the identity provider revoked the session or its renewal lifetime
+// is over): sign in again. Unavailable means turnd could not reach the provider
+// and the session is intact: retry.
+func RenewSession(ctx context.Context, base, token string) (Session, error) {
+	cc, err := Dial(base, wstransport.ClientConfig{})
+	if err != nil {
+		return Session{}, err
+	}
+	defer cc.Close()
+	return RenewSessionConn(ctx, cc, token)
+}
+
+// RenewSessionConn is [RenewSession] over an existing connection.
+func RenewSessionConn(ctx context.Context, cc *grpc.ClientConn, token string) (Session, error) {
+	r, err := turnv1.NewTurndClient(cc).RenewSession(withToken(ctx, token), &turnv1.RenewSessionRequest{})
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{Token: r.GetToken(), Expires: time.Unix(r.GetExpires(), 0)}, nil
+}
+
+// retryUnavailable is the wait before KeepRenewed retries an Unavailable answer
+// (a variable for tests).
+var retryUnavailable = 30 * time.Second
+
+// KeepRenewed renews cur ahead of its expiry until ctx ends, and calls update
+// with every new session (store the token, use it for the next call). It
+// renews when `lead` (default 5 minutes) of the lifetime is left, retries an
+// Unavailable answer every 30 seconds, and returns the error that ended it:
+// ctx's, or the Unauthenticated status after which the person must sign in
+// again. Run it in a goroutine; renew is [RenewSession] over the caller's
+// connection, or a test double.
+func KeepRenewed(ctx context.Context, cur Session, lead time.Duration, renew func(ctx context.Context, token string) (Session, error), update func(Session)) error {
+	if lead <= 0 {
+		lead = 5 * time.Minute
+	}
+	for {
+		wait := time.Until(cur.Expires.Add(-lead))
+		for {
+			if wait < 0 {
+				wait = 0
+			}
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return ctx.Err()
+			case <-t.C:
+			}
+			next, err := renew(ctx, cur.Token)
+			if err == nil {
+				cur = next
+				update(next)
+				break
+			}
+			if status.Code(err) != codes.Unavailable {
+				return err
+			}
+			wait = retryUnavailable
+		}
+	}
+}
+
 // Room is a peer's membership of a room.
 type Room struct {
 	ID      string

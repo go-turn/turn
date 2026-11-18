@@ -79,6 +79,7 @@ func RootCmd() *cobra.Command {
 	f.UintVar(&cfg.Relay.PortMin, "relay-port-min", 0, "lowest relayed UDP port (0 with --relay-port-max 0: any)")
 	f.UintVar(&cfg.Relay.PortMax, "relay-port-max", 0, "highest relayed UDP port")
 	f.DurationVar(&cfg.SessionTTL, "session-ttl", time.Hour, "lifetime of a session token")
+	f.DurationVar(&cfg.RenewalLifetime, "session-renewal-lifetime", 168*time.Hour, "how long a login can be renewed (RenewSession): set it to the client's refresh_lifetime at bridge; the refresh token is kept in memory, server side, and a restart ends every renewal (0 turns renewal off)")
 	f.DurationVar(&cfg.CredTTL, "cred-ttl", time.Hour, "lifetime of host TURN credentials (a guest's never outlive the room)")
 	f.DurationVar(&cfg.Limits.RoomTTL, "room-ttl", time.Hour, "lifetime of a room")
 	f.IntVar(&cfg.Limits.MaxMessageBytes, "max-message-bytes", 16<<10, "largest message body")

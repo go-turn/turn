@@ -75,6 +75,94 @@ func (*CredentialsRequest) Descriptor() ([]byte, []int) {
 	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{0}
 }
 
+type RenewSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewSessionRequest) Reset() {
+	*x = RenewSessionRequest{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewSessionRequest) ProtoMessage() {}
+
+func (x *RenewSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewSessionRequest.ProtoReflect.Descriptor instead.
+func (*RenewSessionRequest) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{1}
+}
+
+type RenewSessionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`      // the new session token
+	Expires       int64                  `protobuf:"varint,2,opt,name=expires,proto3" json:"expires,omitempty"` // Unix seconds
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewSessionResponse) Reset() {
+	*x = RenewSessionResponse{}
+	mi := &file_turn_v1_turnd_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewSessionResponse) ProtoMessage() {}
+
+func (x *RenewSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_turn_v1_turnd_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewSessionResponse.ProtoReflect.Descriptor instead.
+func (*RenewSessionResponse) Descriptor() ([]byte, []int) {
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RenewSessionResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *RenewSessionResponse) GetExpires() int64 {
+	if x != nil {
+		return x.Expires
+	}
+	return 0
+}
+
 type CreateRoomRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -83,7 +171,7 @@ type CreateRoomRequest struct {
 
 func (x *CreateRoomRequest) Reset() {
 	*x = CreateRoomRequest{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[1]
+	mi := &file_turn_v1_turnd_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +183,7 @@ func (x *CreateRoomRequest) String() string {
 func (*CreateRoomRequest) ProtoMessage() {}
 
 func (x *CreateRoomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[1]
+	mi := &file_turn_v1_turnd_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -108,7 +196,7 @@ func (x *CreateRoomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoomRequest.ProtoReflect.Descriptor instead.
 func (*CreateRoomRequest) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{1}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{3}
 }
 
 type CreateRoomResponse struct {
@@ -123,7 +211,7 @@ type CreateRoomResponse struct {
 
 func (x *CreateRoomResponse) Reset() {
 	*x = CreateRoomResponse{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[2]
+	mi := &file_turn_v1_turnd_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -135,7 +223,7 @@ func (x *CreateRoomResponse) String() string {
 func (*CreateRoomResponse) ProtoMessage() {}
 
 func (x *CreateRoomResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[2]
+	mi := &file_turn_v1_turnd_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -148,7 +236,7 @@ func (x *CreateRoomResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoomResponse.ProtoReflect.Descriptor instead.
 func (*CreateRoomResponse) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{2}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CreateRoomResponse) GetRoom() string {
@@ -189,7 +277,7 @@ type JoinRoomRequest struct {
 
 func (x *JoinRoomRequest) Reset() {
 	*x = JoinRoomRequest{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[3]
+	mi := &file_turn_v1_turnd_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -201,7 +289,7 @@ func (x *JoinRoomRequest) String() string {
 func (*JoinRoomRequest) ProtoMessage() {}
 
 func (x *JoinRoomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[3]
+	mi := &file_turn_v1_turnd_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -214,7 +302,7 @@ func (x *JoinRoomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoomRequest.ProtoReflect.Descriptor instead.
 func (*JoinRoomRequest) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{3}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *JoinRoomRequest) GetRoom() string {
@@ -245,7 +333,7 @@ type JoinRoomResponse struct {
 
 func (x *JoinRoomResponse) Reset() {
 	*x = JoinRoomResponse{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[4]
+	mi := &file_turn_v1_turnd_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -257,7 +345,7 @@ func (x *JoinRoomResponse) String() string {
 func (*JoinRoomResponse) ProtoMessage() {}
 
 func (x *JoinRoomResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[4]
+	mi := &file_turn_v1_turnd_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -270,7 +358,7 @@ func (x *JoinRoomResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoomResponse.ProtoReflect.Descriptor instead.
 func (*JoinRoomResponse) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{4}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *JoinRoomResponse) GetRoom() string {
@@ -325,7 +413,7 @@ type DecideRequest struct {
 
 func (x *DecideRequest) Reset() {
 	*x = DecideRequest{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[5]
+	mi := &file_turn_v1_turnd_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -337,7 +425,7 @@ func (x *DecideRequest) String() string {
 func (*DecideRequest) ProtoMessage() {}
 
 func (x *DecideRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[5]
+	mi := &file_turn_v1_turnd_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -350,7 +438,7 @@ func (x *DecideRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideRequest.ProtoReflect.Descriptor instead.
 func (*DecideRequest) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{5}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DecideRequest) GetRoom() string {
@@ -376,7 +464,7 @@ type RoomRef struct {
 
 func (x *RoomRef) Reset() {
 	*x = RoomRef{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[6]
+	mi := &file_turn_v1_turnd_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -388,7 +476,7 @@ func (x *RoomRef) String() string {
 func (*RoomRef) ProtoMessage() {}
 
 func (x *RoomRef) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[6]
+	mi := &file_turn_v1_turnd_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -401,7 +489,7 @@ func (x *RoomRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomRef.ProtoReflect.Descriptor instead.
 func (*RoomRef) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{6}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RoomRef) GetRoom() string {
@@ -419,7 +507,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[7]
+	mi := &file_turn_v1_turnd_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -431,7 +519,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[7]
+	mi := &file_turn_v1_turnd_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -444,7 +532,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{7}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{9}
 }
 
 // IceServers is shaped like an RTCConfiguration's iceServers list.
@@ -458,7 +546,7 @@ type IceServers struct {
 
 func (x *IceServers) Reset() {
 	*x = IceServers{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[8]
+	mi := &file_turn_v1_turnd_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -470,7 +558,7 @@ func (x *IceServers) String() string {
 func (*IceServers) ProtoMessage() {}
 
 func (x *IceServers) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[8]
+	mi := &file_turn_v1_turnd_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -483,7 +571,7 @@ func (x *IceServers) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceServers.ProtoReflect.Descriptor instead.
 func (*IceServers) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{8}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *IceServers) GetIceServers() []*IceServer {
@@ -511,7 +599,7 @@ type IceServer struct {
 
 func (x *IceServer) Reset() {
 	*x = IceServer{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[9]
+	mi := &file_turn_v1_turnd_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -523,7 +611,7 @@ func (x *IceServer) String() string {
 func (*IceServer) ProtoMessage() {}
 
 func (x *IceServer) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[9]
+	mi := &file_turn_v1_turnd_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -536,7 +624,7 @@ func (x *IceServer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceServer.ProtoReflect.Descriptor instead.
 func (*IceServer) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{9}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *IceServer) GetUrls() []string {
@@ -590,7 +678,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	mi := &file_turn_v1_turnd_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -602,7 +690,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_turn_v1_turnd_proto_msgTypes[10]
+	mi := &file_turn_v1_turnd_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -615,7 +703,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{10}
+	return file_turn_v1_turnd_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Envelope) GetSeq() uint64 {
@@ -658,7 +746,11 @@ var File_turn_v1_turnd_proto protoreflect.FileDescriptor
 const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\n" +
 	"\x13turn/v1/turnd.proto\x12\aturn.v1\"\x14\n" +
-	"\x12CredentialsRequest\"\x13\n" +
+	"\x12CredentialsRequest\"\x15\n" +
+	"\x13RenewSessionRequest\"F\n" +
+	"\x14RenewSessionResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x18\n" +
+	"\aexpires\x18\x02 \x01(\x03R\aexpires\"\x13\n" +
 	"\x11CreateRoomRequest\"l\n" +
 	"\x12CreateRoomResponse\x12\x12\n" +
 	"\x04room\x18\x01 \x01(\tR\x04room\x12\x12\n" +
@@ -697,9 +789,10 @@ const file_turn_v1_turnd_proto_rawDesc = "" +
 	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
 	"\x02to\x18\x03 \x01(\tR\x02to\x12\x12\n" +
 	"\x04kind\x18\x04 \x01(\tR\x04kind\x12\x12\n" +
-	"\x04body\x18\x05 \x01(\fR\x04body2\xc6\x03\n" +
+	"\x04body\x18\x05 \x01(\fR\x04body2\x93\x04\n" +
 	"\x05Turnd\x12?\n" +
-	"\vCredentials\x12\x1b.turn.v1.CredentialsRequest\x1a\x13.turn.v1.IceServers\x12E\n" +
+	"\vCredentials\x12\x1b.turn.v1.CredentialsRequest\x1a\x13.turn.v1.IceServers\x12K\n" +
+	"\fRenewSession\x12\x1c.turn.v1.RenewSessionRequest\x1a\x1d.turn.v1.RenewSessionResponse\x12E\n" +
 	"\n" +
 	"CreateRoom\x12\x1a.turn.v1.CreateRoomRequest\x1a\x1b.turn.v1.CreateRoomResponse\x12?\n" +
 	"\bJoinRoom\x12\x18.turn.v1.JoinRoomRequest\x1a\x19.turn.v1.JoinRoomResponse\x12-\n" +
@@ -721,40 +814,44 @@ func file_turn_v1_turnd_proto_rawDescGZIP() []byte {
 	return file_turn_v1_turnd_proto_rawDescData
 }
 
-var file_turn_v1_turnd_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_turn_v1_turnd_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_turn_v1_turnd_proto_goTypes = []any{
-	(*CredentialsRequest)(nil), // 0: turn.v1.CredentialsRequest
-	(*CreateRoomRequest)(nil),  // 1: turn.v1.CreateRoomRequest
-	(*CreateRoomResponse)(nil), // 2: turn.v1.CreateRoomResponse
-	(*JoinRoomRequest)(nil),    // 3: turn.v1.JoinRoomRequest
-	(*JoinRoomResponse)(nil),   // 4: turn.v1.JoinRoomResponse
-	(*DecideRequest)(nil),      // 5: turn.v1.DecideRequest
-	(*RoomRef)(nil),            // 6: turn.v1.RoomRef
-	(*Ack)(nil),                // 7: turn.v1.Ack
-	(*IceServers)(nil),         // 8: turn.v1.IceServers
-	(*IceServer)(nil),          // 9: turn.v1.IceServer
-	(*Envelope)(nil),           // 10: turn.v1.Envelope
+	(*CredentialsRequest)(nil),   // 0: turn.v1.CredentialsRequest
+	(*RenewSessionRequest)(nil),  // 1: turn.v1.RenewSessionRequest
+	(*RenewSessionResponse)(nil), // 2: turn.v1.RenewSessionResponse
+	(*CreateRoomRequest)(nil),    // 3: turn.v1.CreateRoomRequest
+	(*CreateRoomResponse)(nil),   // 4: turn.v1.CreateRoomResponse
+	(*JoinRoomRequest)(nil),      // 5: turn.v1.JoinRoomRequest
+	(*JoinRoomResponse)(nil),     // 6: turn.v1.JoinRoomResponse
+	(*DecideRequest)(nil),        // 7: turn.v1.DecideRequest
+	(*RoomRef)(nil),              // 8: turn.v1.RoomRef
+	(*Ack)(nil),                  // 9: turn.v1.Ack
+	(*IceServers)(nil),           // 10: turn.v1.IceServers
+	(*IceServer)(nil),            // 11: turn.v1.IceServer
+	(*Envelope)(nil),             // 12: turn.v1.Envelope
 }
 var file_turn_v1_turnd_proto_depIdxs = []int32{
-	9,  // 0: turn.v1.IceServers.ice_servers:type_name -> turn.v1.IceServer
+	11, // 0: turn.v1.IceServers.ice_servers:type_name -> turn.v1.IceServer
 	0,  // 1: turn.v1.Turnd.Credentials:input_type -> turn.v1.CredentialsRequest
-	1,  // 2: turn.v1.Turnd.CreateRoom:input_type -> turn.v1.CreateRoomRequest
-	3,  // 3: turn.v1.Turnd.JoinRoom:input_type -> turn.v1.JoinRoomRequest
-	5,  // 4: turn.v1.Turnd.Admit:input_type -> turn.v1.DecideRequest
-	5,  // 5: turn.v1.Turnd.Deny:input_type -> turn.v1.DecideRequest
-	6,  // 6: turn.v1.Turnd.RoomCredentials:input_type -> turn.v1.RoomRef
-	6,  // 7: turn.v1.Turnd.CloseRoom:input_type -> turn.v1.RoomRef
-	10, // 8: turn.v1.Turnd.Room:input_type -> turn.v1.Envelope
-	8,  // 9: turn.v1.Turnd.Credentials:output_type -> turn.v1.IceServers
-	2,  // 10: turn.v1.Turnd.CreateRoom:output_type -> turn.v1.CreateRoomResponse
-	4,  // 11: turn.v1.Turnd.JoinRoom:output_type -> turn.v1.JoinRoomResponse
-	7,  // 12: turn.v1.Turnd.Admit:output_type -> turn.v1.Ack
-	7,  // 13: turn.v1.Turnd.Deny:output_type -> turn.v1.Ack
-	8,  // 14: turn.v1.Turnd.RoomCredentials:output_type -> turn.v1.IceServers
-	7,  // 15: turn.v1.Turnd.CloseRoom:output_type -> turn.v1.Ack
-	10, // 16: turn.v1.Turnd.Room:output_type -> turn.v1.Envelope
-	9,  // [9:17] is the sub-list for method output_type
-	1,  // [1:9] is the sub-list for method input_type
+	1,  // 2: turn.v1.Turnd.RenewSession:input_type -> turn.v1.RenewSessionRequest
+	3,  // 3: turn.v1.Turnd.CreateRoom:input_type -> turn.v1.CreateRoomRequest
+	5,  // 4: turn.v1.Turnd.JoinRoom:input_type -> turn.v1.JoinRoomRequest
+	7,  // 5: turn.v1.Turnd.Admit:input_type -> turn.v1.DecideRequest
+	7,  // 6: turn.v1.Turnd.Deny:input_type -> turn.v1.DecideRequest
+	8,  // 7: turn.v1.Turnd.RoomCredentials:input_type -> turn.v1.RoomRef
+	8,  // 8: turn.v1.Turnd.CloseRoom:input_type -> turn.v1.RoomRef
+	12, // 9: turn.v1.Turnd.Room:input_type -> turn.v1.Envelope
+	10, // 10: turn.v1.Turnd.Credentials:output_type -> turn.v1.IceServers
+	2,  // 11: turn.v1.Turnd.RenewSession:output_type -> turn.v1.RenewSessionResponse
+	4,  // 12: turn.v1.Turnd.CreateRoom:output_type -> turn.v1.CreateRoomResponse
+	6,  // 13: turn.v1.Turnd.JoinRoom:output_type -> turn.v1.JoinRoomResponse
+	9,  // 14: turn.v1.Turnd.Admit:output_type -> turn.v1.Ack
+	9,  // 15: turn.v1.Turnd.Deny:output_type -> turn.v1.Ack
+	10, // 16: turn.v1.Turnd.RoomCredentials:output_type -> turn.v1.IceServers
+	9,  // 17: turn.v1.Turnd.CloseRoom:output_type -> turn.v1.Ack
+	12, // 18: turn.v1.Turnd.Room:output_type -> turn.v1.Envelope
+	10, // [10:19] is the sub-list for method output_type
+	1,  // [1:10] is the sub-list for method input_type
 	1,  // [1:1] is the sub-list for extension type_name
 	1,  // [1:1] is the sub-list for extension extendee
 	0,  // [0:1] is the sub-list for field type_name
@@ -771,7 +868,7 @@ func file_turn_v1_turnd_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_turn_v1_turnd_proto_rawDesc), len(file_turn_v1_turnd_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
