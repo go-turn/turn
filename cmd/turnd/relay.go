@@ -104,9 +104,16 @@ func runRelay(ctx context.Context, rc relayConfig) (func(), error) {
 	if cfg.ProxyProtocolFrom, err = o.proxyPrefixes(); err != nil {
 		return nil, err
 	}
+	cfg.Logger = rc.Logger
+	if rc.Observer != nil {
+		cfg.Observer = rc.Observer
+	}
 	srv, err := server.New(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if rc.OnServer != nil {
+		rc.OnServer(srv)
 	}
 	var closers []func() error
 	stop := func() {

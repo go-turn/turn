@@ -84,6 +84,9 @@ type Config struct {
 
 	// Logger receives debug and warning records (default: discard).
 	Logger *slog.Logger
+	// Observer, when set, is told about every finished control request (see
+	// Observer). Nil is off.
+	Observer Observer
 	// Now replaces time.Now (tests).
 	Now func() time.Time
 }

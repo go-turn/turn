@@ -153,6 +153,7 @@ func (a *allocation) toPeer(peer netip.AddrPort, data []byte) {
 			var out []byte
 			t.toClient(buf, len(data), a.relayAddr, &out)
 			a.s.st.toPeer.Add(1)
+			a.s.st.bytesToPeer.Add(uint64(len(data)))
 			return
 		}
 		if !a.s.pol.allowlisted(peer.Addr()) {
@@ -165,6 +166,7 @@ func (a *allocation) toPeer(peer netip.AddrPort, data []byte) {
 		return
 	}
 	a.s.st.toPeer.Add(1)
+	a.s.st.bytesToPeer.Add(uint64(len(data)))
 }
 
 // readLoop relays datagrams arriving on the relayed address to the client.
@@ -246,4 +248,5 @@ func (a *allocation) toClient(buf []byte, n int, src netip.AddrPort, out *[]byte
 		return
 	}
 	a.s.st.toClient.Add(1)
+	a.s.st.bytesToClient.Add(uint64(n))
 }
