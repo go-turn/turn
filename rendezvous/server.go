@@ -655,7 +655,7 @@ func (s *Server) hostLocked(ctx context.Context, roomID string) (*room, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p != rm.host {
+	if !rm.hasHostPowers(p) {
 		return nil, status.Error(codes.PermissionDenied, "only the host can do this")
 	}
 	return rm, nil
@@ -864,6 +864,14 @@ func (s *Server) leave(rm *room, p *peer) {
 	rm.removeLocked(p, nil)
 	rm.push(rm.host, sys(p.id, rm.host.id, "sys.leave", ""), 0, true)
 }
+
+// hasHostPowers is the one predicate for "may admit, deny, close, hand over".
+// Today it is the single active host (rm.host, a peer, never a renamed ID: the
+// host is data on the room, not the constant "host"). Co-hosts, if the owner
+// decides on them, widen this one test (a set of peers beside rm.host) without
+// touching the wire or the stored peers; rm.host stays the ONE peer that runs
+// the document's centre.
+func (rm *room) hasHostPowers(p *peer) bool { return p == rm.host }
 
 // hostBackLocked ends the grace period: the host has its role.
 func (rm *room) hostBackLocked() {
