@@ -40,6 +40,7 @@ type Server struct {
 
 type counters struct {
 	allocated, toPeer, toClient, dropped, binds atomic.Uint64
+	bytesToPeer, bytesToClient                  atomic.Uint64
 }
 
 // Stats is a snapshot of the server counters.
@@ -50,6 +51,8 @@ type Stats struct {
 	PacketsToClient uint64 // peer to client datagrams relayed
 	Dropped         uint64 // datagrams dropped (no permission, rate cap, bad frame)
 	ChannelBinds    uint64 // successful ChannelBind requests
+	BytesToPeer     uint64 // payload bytes of the datagrams counted in PacketsToPeer
+	BytesToClient   uint64 // payload bytes of the datagrams counted in PacketsToClient
 }
 
 // New validates cfg and returns a stopped-until-served Server.
@@ -79,7 +82,8 @@ func (s *Server) Stats() Stats {
 	s.mu.RLock()
 	n := len(s.allocs)
 	s.mu.RUnlock()
-	return Stats{n, s.st.allocated.Load(), s.st.toPeer.Load(), s.st.toClient.Load(), s.st.dropped.Load(), s.st.binds.Load()}
+	return Stats{n, s.st.allocated.Load(), s.st.toPeer.Load(), s.st.toClient.Load(), s.st.dropped.Load(), s.st.binds.Load(),
+		s.st.bytesToPeer.Load(), s.st.bytesToClient.Load()}
 }
 
 // Close stops every listener, connection and allocation and waits for the
@@ -131,6 +135,7 @@ func (s *Server) untrack(c io.Closer) {
 type transport interface {
 	local() netip.AddrPort
 	proto() uint8
+	name() string // "udp", "tcp" or "tls"
 	isStream() bool
 	send(to netip.AddrPort, b []byte) error
 }
@@ -155,6 +160,7 @@ type udpTransport struct {
 
 func (t *udpTransport) local() netip.AddrPort { return t.addr }
 func (t *udpTransport) proto() uint8          { return protoUDP }
+func (t *udpTransport) name() string          { return "udp" }
 func (t *udpTransport) isStream() bool        { return false }
 func (t *udpTransport) send(to netip.AddrPort, b []byte) error {
 	if t.udp != nil {
@@ -169,6 +175,14 @@ type streamTransport struct {
 	conn net.Conn
 	mu   sync.Mutex
 	addr netip.AddrPort
+	tls  bool
+}
+
+func (t *streamTransport) name() string {
+	if t.tls {
+		return "tls"
+	}
+	return "tcp"
 }
 
 func (t *streamTransport) local() netip.AddrPort { return t.addr }
@@ -333,7 +347,7 @@ func (s *Server) serveConn(raw net.Conn, tlsCfg *tls.Config) {
 	if tlsCfg != nil {
 		c = tls.Server(raw, tlsCfg)
 	}
-	tr := &streamTransport{conn: c, addr: addrPortOf(raw.LocalAddr())}
+	tr := &streamTransport{conn: c, addr: addrPortOf(raw.LocalAddr()), tls: tlsCfg != nil}
 	key := fiveTuple{client: remote, server: tr.addr, proto: protoTCP}
 	defer func() {
 		if a := s.lookup(key); a != nil {

@@ -113,6 +113,74 @@ type Config struct {
 	// never outlive the room.
 	CredTTL time.Duration
 	Now     func() time.Time
+	// Observer, when set, is told the outcome of every RPC (see Observer).
+	Observer Observer
+}
+
+// Observer is told how each RPC ended. It never receives a token, a room ID, a
+// peer ID, a name or a subject: only the action and the outcome, so an
+// implementation can export both as they are. A nil Observer costs nothing.
+type Observer interface {
+	// Event reports one RPC. action is one of "credentials_host",
+	// "credentials_room", "create_room", "knock", "admit", "deny",
+	// "close_room", "renew_session" or "stream"; outcome is "ok" or the lower-case gRPC code
+	// name of the refusal ("unauthenticated", "not_found", "resource_exhausted",
+	// "permission_denied", "failed_precondition", "invalid_argument",
+	// "unavailable", "already_exists"...). ctx is the RPC's context, so an
+	// implementation can annotate the span in it.
+	Event(ctx context.Context, action, outcome string)
+}
+
+// Counts is the live state, for gauges.
+type Counts struct {
+	Rooms   int // live rooms
+	Pending int // guests waiting to be admitted
+	Guests  int // admitted guests
+}
+
+// Counts returns the live rooms, the guests waiting and the guests admitted.
+func (s *Server) Counts() Counts {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := Counts{Rooms: len(s.rooms)}
+	for _, rm := range s.rooms {
+		for id, p := range rm.peers {
+			switch {
+			case p.pending:
+				c.Pending++
+			case id != HostID:
+				c.Guests++
+			}
+		}
+	}
+	return c
+}
+
+func (s *Server) seen(ctx context.Context, action string, err error) {
+	if s.cfg.Observer == nil {
+		return
+	}
+	out := "ok"
+	if err != nil {
+		out = snake(status.Code(err).String())
+	}
+	s.cfg.Observer.Event(ctx, action, out)
+}
+
+// snake turns a gRPC code name ("ResourceExhausted") into "resource_exhausted".
+func snake(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			if i > 0 {
+				b = append(b, '_')
+			}
+			c += 'a' - 'A'
+		}
+		b = append(b, c)
+	}
+	return string(b)
 }
 
 // Server is the rendezvous. Build it with [New] and [Server.Register] it.
@@ -252,7 +320,8 @@ var (
 )
 
 // RenewSession implements turn.v1.Turnd.
-func (s *Server) RenewSession(ctx context.Context, _ *turnv1.RenewSessionRequest) (*turnv1.RenewSessionResponse, error) {
+func (s *Server) RenewSession(ctx context.Context, _ *turnv1.RenewSessionRequest) (_ *turnv1.RenewSessionResponse, err error) {
+	defer func() { s.seen(ctx, "renew_session", err) }()
 	if s.cfg.Renew == nil {
 		return nil, status.Error(codes.Unimplemented, "session renewal is off")
 	}
@@ -260,7 +329,7 @@ func (s *Server) RenewSession(ctx context.Context, _ *turnv1.RenewSessionRequest
 	if tok == "" {
 		return nil, errUnauth
 	}
-	nt, exp, err := s.cfg.Renew(ctx, tok)
+	nt, exp, err := s.cfg.Renew(ctx, tok) // err is the named result: the deferred observer reads it
 	switch {
 	case err == nil && nt != "":
 		return &turnv1.RenewSessionResponse{Token: nt, Expires: exp.Unix()}, nil
@@ -295,7 +364,8 @@ func (s *Server) mintResponse(subject string, expiry time.Time) *turnv1.IceServe
 }
 
 // Credentials implements turn.v1.Turnd.
-func (s *Server) Credentials(ctx context.Context, _ *turnv1.CredentialsRequest) (*turnv1.IceServers, error) {
+func (s *Server) Credentials(ctx context.Context, _ *turnv1.CredentialsRequest) (_ *turnv1.IceServers, err error) {
+	defer func() { s.seen(ctx, "credentials_host", err) }()
 	sub, err := s.subject(ctx)
 	if err != nil {
 		return nil, err
@@ -308,7 +378,8 @@ func newPeer(id string) *peer {
 }
 
 // CreateRoom implements turn.v1.Turnd.
-func (s *Server) CreateRoom(ctx context.Context, _ *turnv1.CreateRoomRequest) (*turnv1.CreateRoomResponse, error) {
+func (s *Server) CreateRoom(ctx context.Context, _ *turnv1.CreateRoomRequest) (_ *turnv1.CreateRoomResponse, err error) {
+	defer func() { s.seen(ctx, "create_room", err) }()
 	sub, err := s.subject(ctx)
 	if err != nil {
 		return nil, err
@@ -431,7 +502,8 @@ func (s *Server) expirePendingLocked(rm *room, now time.Time) {
 }
 
 // JoinRoom implements turn.v1.Turnd.
-func (s *Server) JoinRoom(_ context.Context, req *turnv1.JoinRoomRequest) (*turnv1.JoinRoomResponse, error) {
+func (s *Server) JoinRoom(ctx context.Context, req *turnv1.JoinRoomRequest) (_ *turnv1.JoinRoomResponse, err error) {
+	defer func() { s.seen(ctx, "knock", err) }()
 	name, ok := cleanName(req.GetName())
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "bad name")
@@ -505,7 +577,8 @@ func (s *Server) decision(ctx context.Context, req *turnv1.DecideRequest) (*room
 }
 
 // Admit implements turn.v1.Turnd.
-func (s *Server) Admit(ctx context.Context, req *turnv1.DecideRequest) (*turnv1.Ack, error) {
+func (s *Server) Admit(ctx context.Context, req *turnv1.DecideRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "admit", err) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rm, g, err := s.decision(ctx, req)
@@ -527,7 +600,8 @@ func (s *Server) Admit(ctx context.Context, req *turnv1.DecideRequest) (*turnv1.
 
 // Deny implements turn.v1.Turnd: it refuses a waiting guest, or removes an
 // admitted one. Its token is dead.
-func (s *Server) Deny(ctx context.Context, req *turnv1.DecideRequest) (*turnv1.Ack, error) {
+func (s *Server) Deny(ctx context.Context, req *turnv1.DecideRequest) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "deny", err) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rm, g, err := s.decision(ctx, req)
@@ -542,7 +616,8 @@ func (s *Server) Deny(ctx context.Context, req *turnv1.DecideRequest) (*turnv1.A
 }
 
 // RoomCredentials implements turn.v1.Turnd.
-func (s *Server) RoomCredentials(ctx context.Context, req *turnv1.RoomRef) (*turnv1.IceServers, error) {
+func (s *Server) RoomCredentials(ctx context.Context, req *turnv1.RoomRef) (_ *turnv1.IceServers, err error) {
+	defer func() { s.seen(ctx, "credentials_room", err) }()
 	s.mu.Lock()
 	rm, p, err := s.peerLocked(req.GetRoom(), bearer(ctx))
 	if err != nil {
@@ -567,7 +642,8 @@ func (s *Server) RoomCredentials(ctx context.Context, req *turnv1.RoomRef) (*tur
 }
 
 // CloseRoom implements turn.v1.Turnd.
-func (s *Server) CloseRoom(ctx context.Context, req *turnv1.RoomRef) (*turnv1.Ack, error) {
+func (s *Server) CloseRoom(ctx context.Context, req *turnv1.RoomRef) (_ *turnv1.Ack, err error) {
+	defer func() { s.seen(ctx, "close_room", err) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rm, err := s.hostLocked(ctx, req.GetRoom())
@@ -670,10 +746,12 @@ func (s *Server) Room(stream grpc.BidiStreamingServer[turnv1.Envelope, turnv1.En
 	}
 	if err != nil {
 		s.mu.Unlock()
+		s.seen(ctx, "stream", err)
 		return err
 	}
 	p.streaming = true
 	s.mu.Unlock()
+	s.seen(ctx, "stream", nil)
 	defer func() {
 		s.mu.Lock()
 		p.streaming = false

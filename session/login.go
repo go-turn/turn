@@ -49,7 +49,14 @@ type LoginConfig struct {
 	// Without it the operator cannot tell a login that worked from one that
 	// failed: the popup shows the same "You can close this window" for both
 	// when it has no opener. Nil logs nothing.
-	Logf func(format string, args ...any)
+	Logf func(ctx context.Context, format string, args ...any)
+	// Observe receives the outcome of every callback and of every /login
+	// start, as one fixed word: "issued", "unknown_flow", "no_cookie",
+	// "cookie_mismatch", "provider_error", "issuer_check", "exchange_failed",
+	// "issue_failed" (callback); "started", "origin_refused", "too_many_flows",
+	// "internal_error" (login). ctx is the request's, so the span in it can be
+	// annotated. Nil observes nothing.
+	Observe func(ctx context.Context, outcome string)
 }
 
 // Login serves /login and /callback.
@@ -91,7 +98,10 @@ func NewLogin(cfg LoginConfig) (*Login, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.Logf == nil {
-		cfg.Logf = func(string, ...any) {}
+		cfg.Logf = func(context.Context, string, ...any) {}
+	}
+	if cfg.Observe == nil {
+		cfg.Observe = func(context.Context, string) {}
 	}
 	return &Login{cfg: cfg, flows: map[string]flow{}}, nil
 }
@@ -114,12 +124,14 @@ func (l *Login) login(w http.ResponseWriter, r *http.Request) {
 	origin := r.URL.Query().Get("origin")
 	if !slices.Contains(l.cfg.Origins, origin) {
 		// Never a redirect: an unknown return origin is a 400, not a bounce.
+		l.cfg.Observe(r.Context(), "origin_refused")
 		http.Error(w, "origin not allowed", http.StatusBadRequest)
 		return
 	}
 	f := rp.NewFlow()
 	var cookie [16]byte
 	if _, err := rand.Read(cookie[:]); err != nil {
+		l.cfg.Observe(r.Context(), "internal_error")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -129,12 +141,14 @@ func (l *Login) login(w http.ResponseWriter, r *http.Request) {
 	l.sweepLocked(now)
 	if len(l.flows) >= l.cfg.MaxFlows {
 		l.mu.Unlock()
+		l.cfg.Observe(r.Context(), "too_many_flows")
 		w.Header().Set("Retry-After", "30")
 		http.Error(w, "too many logins in progress", http.StatusServiceUnavailable)
 		return
 	}
 	l.flows[f.State] = flow{f: f, origin: origin, bind: sha256.Sum256([]byte(cv)), expires: now.Add(l.cfg.FlowTTL)}
 	l.mu.Unlock()
+	l.cfg.Observe(r.Context(), "started")
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: cv, Path: "/callback", MaxAge: int(l.cfg.FlowTTL / time.Second),
 		HttpOnly: true, Secure: l.cfg.Secure, SameSite: http.SameSiteLaxMode})
 	w.Header().Set("Cache-Control", "no-store")
@@ -144,25 +158,33 @@ func (l *Login) login(w http.ResponseWriter, r *http.Request) {
 
 func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	rc := r.Context()
+	// refuse records a login that did not end in a session: the outcome is a
+	// fixed word (a metric label and span attribute), the log line is the
+	// operator's reason.
+	refuse := func(outcome, format string, args ...any) {
+		l.cfg.Observe(rc, outcome)
+		l.cfg.Logf(rc, format, args...)
+	}
 	state := q.Get("state")
 	l.mu.Lock()
 	fl, ok := l.flows[state]
 	delete(l.flows, state) // single use, whatever follows
 	l.mu.Unlock()
 	if !ok || !fl.expires.After(l.cfg.Now()) {
-		l.cfg.Logf("login refused: unknown or expired flow")
+		refuse("unknown_flow", "login refused: unknown or expired flow")
 		http.Error(w, "login expired or unknown; start again", http.StatusBadRequest)
 		return
 	}
 	c, err := r.Cookie(cookieName)
 	if err != nil {
-		l.cfg.Logf("login refused: no flow cookie (not started in this browser)")
+		refuse("no_cookie", "login refused: no flow cookie (not started in this browser)")
 		http.Error(w, "login not started in this browser", http.StatusBadRequest)
 		return
 	}
 	sum := sha256.Sum256([]byte(c.Value))
 	if subtle.ConstantTimeCompare(sum[:], fl.bind[:]) != 1 {
-		l.cfg.Logf("login refused: flow cookie does not match (not started in this browser)")
+		refuse("cookie_mismatch", "login refused: flow cookie does not match (not started in this browser)")
 		http.Error(w, "login not started in this browser", http.StatusBadRequest)
 		return
 	}
@@ -170,12 +192,12 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	if e := q.Get("error"); e != "" {
 		// The provider's error code is text from the request: quoted and cut,
 		// so it cannot forge a log line.
-		l.cfg.Logf("login refused by the provider: %.64q", e)
+		refuse("provider_error", "login refused by the provider: %.64q", e)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "access_denied"})
 		return
 	}
 	if err := l.cfg.Client.CheckIssuer(q); err != nil || q.Get("code") == "" {
-		l.cfg.Logf("login refused: issuer check or missing code: %v", err)
+		refuse("issuer_check", "login refused: issuer check or missing code: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
@@ -183,7 +205,7 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	pt, id, err := l.cfg.Client.Exchange(ctx, q.Get("code"), fl.f)
 	if err != nil || id == nil {
-		l.cfg.Logf("login refused: code exchange: %v", err)
+		refuse("exchange_failed", "login refused: code exchange: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
@@ -197,20 +219,21 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 			tok, exp, err = l.cfg.Signer.IssueRenewable(subject, fam, l.cfg.Now())
 			renewable = true
 		} else {
-			l.cfg.Logf("login: not renewable: %v", ferr)
+			l.cfg.Logf(rc, "login: not renewable: %v", ferr)
 		}
 	} else if l.cfg.Renewer != nil {
-		l.cfg.Logf("login: the provider issued no refresh token (enable refresh_lifetime for this client): session not renewable")
+		l.cfg.Logf(rc, "login: the provider issued no refresh token (enable refresh_lifetime for this client): session not renewable")
 	}
 	if !renewable {
 		tok, exp, err = l.cfg.Signer.Issue(subject, l.cfg.Now())
 	}
 	if err != nil {
-		l.cfg.Logf("login refused: issuing the session: %v", err)
+		refuse("issue_failed", "login refused: issuing the session: %v", err)
 		l.page(w, fl.origin, message{Type: "turnd-error", Error: "login_failed"})
 		return
 	}
-	l.cfg.Logf("login: session issued to %s for origin %s, until %s, renewable: %t", subject, fl.origin, exp.UTC().Format(time.RFC3339), renewable)
+	l.cfg.Observe(rc, "issued")
+	l.cfg.Logf(rc, "login: session issued to %s for origin %s, until %s, renewable: %t", subject, fl.origin, exp.UTC().Format(time.RFC3339), renewable)
 	l.page(w, fl.origin, message{Type: "turnd-session", Token: tok, Expires: exp.Unix()})
 }
 

@@ -9,8 +9,16 @@ import (
 	"github.com/go-turn/turn/stun"
 )
 
+// benchObserver, when set (export_test.go, from the telemetry benchmark switch),
+// is the Observer of every benchmark server: the same benchmarks then measure
+// the cost of telemetry being on.
+var benchObserver Observer
+
 func benchEnv(b *testing.B) *env {
 	return start(b, false, func(c *Config) {
+		if benchObserver != nil {
+			c.Observer = benchObserver
+		}
 		loopbackAllow(c)
 		c.MaxBytesPerSecond = -1
 		c.MaxAllocations = 1 << 20

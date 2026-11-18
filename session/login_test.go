@@ -39,7 +39,7 @@ type logLines struct {
 	lines []string
 }
 
-func (l *logLines) logf(format string, args ...any) {
+func (l *logLines) logf(_ context.Context, format string, args ...any) {
 	l.mu.Lock()
 	l.lines = append(l.lines, fmt.Sprintf(format, args...))
 	l.mu.Unlock()

@@ -68,6 +68,13 @@ func (s *Server) reply(tr transport, to netip.AddrPort, m *stun.Message) {
 
 // fail answers req with an error response; auth adds REALM and a fresh NONCE.
 func (s *Server) fail(tr transport, to netip.AddrPort, req *stun.Message, code int, reason string, auth bool) {
+	s.failPolicy(tr, to, req, code, reason, auth, "")
+}
+
+// failPolicy is fail for a refusal the peer-address policy caused; class names
+// it for the Observer.
+func (s *Server) failPolicy(tr transport, to netip.AddrPort, req *stun.Message, code int, reason string, auth bool, class string) {
+	s.observe(tr, req, code, class)
 	r := &stun.Message{Class: stun.ClassError, Method: req.Method, TxID: req.TxID}
 	r.AddError(code, reason)
 	if auth {
@@ -89,6 +96,7 @@ type creds struct {
 
 // ok answers req with a success response protected by c.
 func (s *Server) ok(tr transport, to netip.AddrPort, req *stun.Message, c creds, fill func(*stun.Message)) []byte {
+	s.observe(tr, req, 0, "")
 	r := &stun.Message{Class: stun.ClassSuccess, Method: req.Method, TxID: req.TxID}
 	fill(r)
 	r.AddString(stun.AttrSoftware, s.cfg.Software)
@@ -182,6 +190,12 @@ func (s *Server) handleSTUN(tr transport, from netip.AddrPort, m *stun.Message) 
 	case m.Class == stun.ClassIndication && m.Method == stun.MethodSend:
 		s.handleSend(tr, from, m)
 	case m.Class == stun.ClassRequest:
+		if s.cfg.Observer != nil {
+			// The request's start rides on the transport for the length of the
+			// request (observe reads it), so the Message itself stays as small
+			// as it was: a larger one moved the Send path to the next size class.
+			tr = &timedTransport{transport: tr, received: time.Now()}
+		}
 		switch m.Method {
 		case stun.MethodAllocate, stun.MethodRefresh, stun.MethodCreatePermission, stun.MethodChannelBind:
 		default:
@@ -202,6 +216,7 @@ func (s *Server) handleSTUN(tr transport, from netip.AddrPort, m *stun.Message) 
 			r := &stun.Message{Class: stun.ClassError, Method: m.Method, TxID: m.TxID}
 			r.AddError(stun.CodeUnknownAttribute, "Unknown Attribute")
 			r.AddUnknownAttributes(unk)
+			s.observe(tr, m, stun.CodeUnknownAttribute, "")
 			r.AddString(stun.AttrSoftware, s.cfg.Software)
 			s.reply(tr, from, r)
 			return
@@ -471,11 +486,17 @@ func (s *Server) handleCreatePermission(tr transport, from netip.AddrPort, m *st
 
 func (s *Server) refuse(tr transport, from netip.AddrPort, m *stun.Message, code int, p netip.AddrPort) {
 	reason := "Forbidden"
-	if code == stun.CodePeerAddrFamily {
-		reason = "Peer Address Family Mismatch"
+	class := "reserved"
+	switch {
+	case code == stun.CodePeerAddrFamily:
+		reason, class = "Peer Address Family Mismatch", "family_mismatch"
+	case p.Port() == 0:
+		class = "port_zero"
+	default:
+		class = s.pol.class(p.Addr())
 	}
 	s.cfg.Logger.Debug("peer refused", "code", code, "peer", p, "client", from)
-	s.fail(tr, from, m, code, reason, false)
+	s.failPolicy(tr, from, m, code, reason, false, class)
 }
 
 func (s *Server) handleChannelBind(tr transport, from netip.AddrPort, m *stun.Message, c creds, a *allocation) {

@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-turn/turn/server"
+	"github.com/go-turn/turn/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -87,6 +89,14 @@ func RootCmd() *cobra.Command {
 	f.IntVar(&cfg.Limits.MaxGuests, "max-guests", 8, "guests per room")
 	f.IntVar(&cfg.Limits.MaxRoomsPerSubject, "max-rooms-per-subject", 4, "live rooms per person")
 	f.IntVar(&cfg.Limits.MaxRooms, "max-rooms", 1024, "live rooms on the server")
+	cfg.Otel = telemetry.DefaultConfig()
+	f.StringVar(&cfg.Otel.Endpoint, "otel-endpoint", "", "OpenTelemetry collector: https://host:4318 for http, host:4317 for grpc (telemetry off when empty)")
+	f.StringVar(&cfg.Otel.Protocol, "otel-protocol", "http", "OTLP transport: grpc or http")
+	f.StringVar(&cfg.OtelTokenFile, "otel-token-file", "", "file holding the collector's bearer token (never read from the environment: OTEL_EXPORTER_OTLP_HEADERS is ignored)")
+	f.BoolVar(&cfg.Otel.Insecure, "otel-insecure", false, "allow http:// or plaintext gRPC to the collector (a token is then refused unless the collector is on loopback)")
+	f.Float64Var(&cfg.Otel.SampleRatio, "otel-sample-ratio", 1, "fraction of traces kept, 0..1")
+	f.StringVar(&cfg.Otel.ServiceName, "otel-service-name", "turnd", "service.name of the exported telemetry")
+	f.BoolVar(&cfg.Otel.TrustClientContext, "otel-trust-client-context", false, "continue a caller's W3C traceparent (off: every request starts its own trace)")
 	// the test hook is reached through a package variable set before Execute.
 	ready = readyHook
 	cmd.AddCommand(mintCmd())
@@ -102,13 +112,30 @@ func serve(ctx context.Context, cmd *cobra.Command, cfg config, ready func(strin
 		// validate runs in newApp; a bad public URL is reported there.
 		cfg.Realm = hostOf(cfg.PublicURL)
 	}
-	a, err := newApp(ctx, cfg, cmd.ErrOrStderr())
+	tel, logger, err := setupTelemetry(ctx, &cfg, cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tel.Shutdown(sctx); err != nil {
+			logger.Warn("telemetry shutdown", "err", err)
+		}
+	}()
+	a, err := newApp(ctx, cfg, logger, tel)
 	if err != nil {
 		return err
 	}
 	defer a.Close()
-	stopRelay, err := startRelay(ctx, relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil), AuthExisting: a.ring.AuthExisting(),
-		Options: cfg.Relay, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile})
+	rc := relayConfig{Realm: cfg.Realm, Auth: a.ring.Auth(nil), AuthExisting: a.ring.AuthExisting(),
+		Options: cfg.Relay, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile, Logger: logger}
+	if tel.Enabled() {
+		m := tel.Metrics()
+		rc.Observer = m.ServerObserver()
+		rc.OnServer = func(s *server.Server) { m.BindRelay(s.Stats, s.Usage) }
+	}
+	stopRelay, err := startRelay(ctx, rc)
 	if err != nil {
 		return fmt.Errorf("relay: %w", err)
 	}
@@ -119,7 +146,7 @@ func serve(ctx context.Context, cmd *cobra.Command, cfg config, ready func(strin
 	if err != nil {
 		return err
 	}
-	srv := newHTTPServer(cfg.Listen, a.Handler)
+	srv := newHTTPServer(cfg.Listen, tel.HTTP(a.Handler, GRPCPath))
 	fmt.Fprintf(out, "turnd %s listening on %s\n", version, ln.Addr())
 	if ready != nil {
 		ready(ln.Addr().String())

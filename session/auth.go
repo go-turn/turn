@@ -24,7 +24,12 @@ type Auth struct {
 	AccessTokens *oidc.Verifier
 	Now          func() time.Time
 	// Logf receives the real reason for a refusal (never sent to the client).
-	Logf func(format string, args ...any)
+	Logf func(ctx context.Context, format string, args ...any)
+	// Observe receives the reason of every refusal as one fixed word:
+	// "session_token" or "access_token" (a token that failed verification),
+	// "no_access_verifier" (an issuer token with no verifier configured),
+	// "no_subject". Nil observes nothing.
+	Observe func(ctx context.Context, reason string)
 }
 
 // Bearer extracts the token of an Authorization: Bearer header.
@@ -57,29 +62,39 @@ func (a *Auth) Authenticate(ctx context.Context, tok string) (string, error) {
 	if isSessionToken(tok) {
 		c, err := a.Signer.Verify(tok, now())
 		if err != nil {
-			a.logf("session token refused: %v", err)
+			a.logf(ctx, "session token refused: %v", err)
+			a.observe(ctx, "session_token")
 			return "", ErrUnauthorized
 		}
 		return c.Subject, nil
 	}
 	if a.AccessTokens == nil {
+		a.observe(ctx, "no_access_verifier")
 		return "", ErrUnauthorized
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	t, err := a.AccessTokens.Verify(ctx, tok)
 	if err != nil {
-		a.logf("access token refused: %v", err)
+		a.logf(ctx, "access token refused: %v", err)
+		a.observe(ctx, "access_token")
 		return "", ErrUnauthorized
 	}
 	if t.Subject() == "" {
+		a.observe(ctx, "no_subject")
 		return "", ErrUnauthorized
 	}
 	return Subject(t.Issuer(), t.Subject()), nil
 }
 
-func (a *Auth) logf(f string, args ...any) {
+func (a *Auth) logf(ctx context.Context, f string, args ...any) {
 	if a.Logf != nil {
-		a.Logf(f, args...)
+		a.Logf(ctx, f, args...)
+	}
+}
+
+func (a *Auth) observe(ctx context.Context, reason string) {
+	if a.Observe != nil {
+		a.Observe(ctx, reason)
 	}
 }

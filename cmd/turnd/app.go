@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,8 +19,11 @@ import (
 	"github.com/go-authn/rp"
 	"github.com/go-turn/turn/creds"
 	"github.com/go-turn/turn/rendezvous"
+	"github.com/go-turn/turn/server"
 	"github.com/go-turn/turn/session"
+	"github.com/go-turn/turn/telemetry"
 	wstransport "github.com/grpc-transports/websocket"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
@@ -42,6 +45,52 @@ type config struct {
 	RenewalLifetime time.Duration
 	Limits          rendezvous.Limits
 	Relay           relayOptions
+	// Otel is the telemetry configuration; OtelTokenFile holds the collector's
+	// bearer token (a file, like every secret).
+	Otel          telemetry.Config
+	OtelTokenFile string
+}
+
+// Export intervals; tests shorten them. Zero keeps the SDK defaults.
+var otelMetricInterval, otelBatchInterval time.Duration
+
+// setupTelemetry reads the collector token, starts the pipeline and builds the
+// logger: JSON on logw, exported over OTLP too when telemetry is on.
+func setupTelemetry(ctx context.Context, cfg *config, logw io.Writer) (*telemetry.Telemetry, *slog.Logger, error) {
+	tc := cfg.Otel
+	tc.Version = version
+	tc.MetricInterval, tc.BatchInterval = otelMetricInterval, otelBatchInterval
+	if cfg.OtelTokenFile != "" {
+		b, err := readSecretFile(cfg.OtelTokenFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("otel token: %w", err)
+		}
+		tc.Token = string(b)
+	}
+	var warns []string
+	tel, err := telemetry.Setup(ctx, tc, func(m string) { warns = append(warns, m) })
+	if err != nil {
+		return nil, nil, err
+	}
+	logger := tel.Logger(logw, slog.LevelInfo)
+	for _, w := range warns {
+		logger.Warn(w)
+	}
+	return tel, logger, nil
+}
+
+// logfFor adapts a logger to the Logf callbacks of the session package: the
+// line is the same text as before, now one JSON record carrying the trace and
+// span of the request; a refusal is a warning.
+func logfFor(l *slog.Logger) func(context.Context, string, ...any) {
+	return func(ctx context.Context, format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		lvl := slog.LevelInfo
+		if strings.Contains(msg, "refused") {
+			lvl = slog.LevelWarn
+		}
+		l.Log(ctx, lvl, msg)
+	}
 }
 
 // relayConfig is what the TURN relay needs from the HTTP half.
@@ -58,6 +107,12 @@ type relayConfig struct {
 	// are the certificate for --turns-listen.
 	Options                 relayOptions
 	TLSCertFile, TLSKeyFile string
+	// Logger receives the relay's warnings (default: discarded). Observer, when
+	// non-nil, is told about every control request; OnServer receives the
+	// server once built (for gauges).
+	Logger   *slog.Logger
+	Observer server.Observer
+	OnServer func(*server.Server)
 }
 
 // ---- SEAM: TURN relay -------------------------------------------------------
@@ -172,11 +227,11 @@ type app struct {
 }
 
 // newApp reads the secrets, discovers the issuer and builds the handlers.
-func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
+func newApp(ctx context.Context, cfg config, logger *slog.Logger, tel *telemetry.Telemetry) (*app, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	logger := log.New(logw, "turnd: ", log.LstdFlags)
+	logf := logfFor(logger)
 	cs, err := readSecretFile(cfg.ClientSecretFile)
 	if err != nil {
 		return nil, fmt.Errorf("client secret: %w", err)
@@ -218,16 +273,24 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 	}
 	var renewer *session.Renewer
 	if cfg.RenewalLifetime > 0 {
-		if renewer, err = session.NewRenewer(session.RenewConfig{Refresher: client, Signer: signer, Lifetime: cfg.RenewalLifetime, Logf: logger.Printf}); err != nil {
+		if renewer, err = session.NewRenewer(session.RenewConfig{Refresher: client, Signer: signer, Lifetime: cfg.RenewalLifetime,
+			Logf: func(f string, a ...any) { logf(context.Background(), f, a...) }}); err != nil {
 			return nil, err
 		}
 	}
 	secure := strings.HasPrefix(public, "https://")
-	login, err := session.NewLogin(session.LoginConfig{Client: client, Signer: signer, Origins: cfg.Origins, Secure: secure, Renewer: renewer, Logf: logger.Printf})
+	lc := session.LoginConfig{Client: client, Signer: signer, Origins: cfg.Origins, Secure: secure, Renewer: renewer, Logf: logf}
+	auth := &session.Auth{Signer: signer, Logf: logf}
+	var rvObs rendezvous.Observer
+	if tel.Enabled() {
+		lc.Observe = tel.Metrics().LoginObserve
+		auth.Observe = tel.Metrics().AuthObserve
+		rvObs = tel.Metrics().RendezvousObserver()
+	}
+	login, err := session.NewLogin(lc)
 	if err != nil {
 		return nil, err
 	}
-	auth := &session.Auth{Signer: signer, Logf: logger.Printf}
 	if cfg.AccessTokenAudience != "" {
 		auth.AccessTokens, err = oidc.New(dctx, oidc.Config{Issuer: cfg.Issuer, Audience: cfg.AccessTokenAudience,
 			Type: "at+jwt", Client: httpClient})
@@ -249,9 +312,12 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 		}
 	}
 	rv, err := rendezvous.New(rendezvous.Config{Auth: auth.Authenticate, Renew: renew, Keyring: ring, STUN: cfg.STUNURLs, TURN: cfg.TURNURLs,
-		Limits: cfg.Limits, CredTTL: cfg.CredTTL})
+		Limits: cfg.Limits, CredTTL: cfg.CredTTL, Observer: rvObs})
 	if err != nil {
 		return nil, err
+	}
+	if tel.Enabled() {
+		tel.Metrics().BindRendezvous(rv.Counts)
 	}
 
 	// gRPC over a WebSocket: browsers cannot speak anything else.
@@ -266,14 +332,24 @@ func newApp(ctx context.Context, cfg config, logw io.Writer) (*app, error) {
 			}
 			return nil, nil
 		},
-		Logger: logger,
+		Logger: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	})
-	gs := grpc.NewServer(
+	gopts := []grpc.ServerOption{
 		grpc.Creds(wstransport.ServerCredentials()),
 		grpc.MaxRecvMsgSize(rv.MaxRecvMsgSize()),
 		grpc.MaxConcurrentStreams(32),
 		grpc.KeepaliveParams(keepalive.ServerParameters{Time: time.Minute, Timeout: 20 * time.Second}),
-	)
+	}
+	if tel.Enabled() {
+		// One server span per RPC (rpc.system.name grpc, rpc.method, rpc.status_code)
+		// and the rpc.server.* metrics. The peer address the instrumentation
+		// records is removed before export (telemetry/scrub.go).
+		gopts = append(gopts, grpc.StatsHandler(otelgrpc.NewServerHandler(
+			otelgrpc.WithTracerProvider(tel.TracerProvider()),
+			otelgrpc.WithMeterProvider(tel.MeterProvider()),
+			otelgrpc.WithPropagators(tel.Propagator()))))
+	}
+	gs := grpc.NewServer(gopts...)
 	rv.Register(gs)
 	go func() { _ = gs.Serve(lis) }()
 

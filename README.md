@@ -121,6 +121,69 @@ all of it grpc. go-crdt/collab's js/wasm build does not link grpc, so a page tha
 does not otherwise ship it should load this client in a separate wasm, fetched
 when a collaboration starts.
 
+### Observability (OpenTelemetry)
+
+`turnd` exports traces, metrics and logs over OTLP (gRPC or HTTP) with the
+official Go SDK. It is off, and costs nothing, until `--otel-endpoint` is set.
+
+| Flag | Meaning |
+|---|---|
+| `--otel-endpoint` | `https://host:4318` (http) or `host:4317` (grpc); no credentials, query or fragment in it |
+| `--otel-protocol` | `http` (default) or `grpc` |
+| `--otel-token-file` | file holding the collector's bearer token, sent as `Authorization: Bearer …` |
+| `--otel-insecure` | allow `http://` or plaintext gRPC (a token is then refused unless the collector is on loopback) |
+| `--otel-sample-ratio` | fraction of traces kept, 0..1 (default 1) |
+| `--otel-service-name` | `service.name` (default `turnd`); `service.version` is the build version, `service.instance.id` a random ID |
+| `--otel-trust-client-context` | continue a caller's W3C `traceparent`; off, every request starts its own trace |
+
+The token is read from a file only. `OTEL_EXPORTER_OTLP_HEADERS` (and the
+per-signal variants) is ignored and reported at startup, so a token never travels
+through the environment.
+
+**Traces.** A server span for `/login`, `/callback` and `/healthz` (named
+`GET /login`, status Error only for a 5xx, `turnd.outcome` on login), one for
+every gRPC method (otelgrpc, `rpc.method`, `rpc.status_code`, plus
+`turnd.room.action` and `turnd.outcome`), and a short root span per TURN control
+request (`TURN allocate`, `refresh`, `create_permission`, `channel_bind`, with
+`turnd.result` and `turnd.policy`). There is no span per relayed packet.
+
+**Metrics** (units are UCUM; every attribute has a small fixed set of values):
+
+| Instrument | Kind, unit | Attributes |
+|---|---|---|
+| `turnd.relay.allocations`, `.permissions`, `.channels` | gauge, `{allocation}` `{permission}` `{channel}` | |
+| `turnd.relay.requests` | counter, `{request}` | `turnd.method`, `turnd.transport` (udp, tcp, tls), `turnd.result` |
+| `turnd.relay.policy.refusals` | counter, `{refusal}` | `turnd.policy`: loopback, private, link_local, metadata, cgnat, multicast, translator, own_address, reserved, port_zero, family_mismatch |
+| `turnd.relay.auth.failures` | counter, `{failure}` | `turnd.surface` (relay, api), `turnd.reason` |
+| `turnd.relay.bytes`, `.packets` | counter, `By` `{packet}` | `turnd.direction` (client_to_peer, peer_to_client) |
+| `turnd.relay.packets.dropped` | counter, `{packet}` | |
+| `turnd.rooms` | gauge, `{room}` | |
+| `turnd.guests` | gauge, `{guest}` | `turnd.state` (pending, admitted) |
+| `turnd.rendezvous.operations` | counter, `{operation}` | `turnd.action`, `turnd.outcome` |
+| `turnd.login.outcomes` | counter, `{login}` | `turnd.outcome` |
+| `http.server.request.duration` | histogram, `s` | `http.request.method`, `http.route`, `http.response.status_code` |
+| `rpc.server.*` | otelgrpc | |
+
+Allocations created and refused are `turnd.relay.requests{turnd.method=allocate}`
+by result; knocks, admits and denies are `turnd.rendezvous.operations`; TURN
+credentials minted are its `credentials_host` and `credentials_room` actions with
+outcome `ok`; sessions issued and refused are `turnd.login.outcomes`. The relay's
+packet and byte counters are read when the metrics are pushed: the relay's hot
+path does the same work with telemetry on or off.
+
+**Logs.** `log/slog`, JSON on stderr (journald-friendly), with `trace_id` and
+`span_id` when a span is active; with telemetry on the same records go over OTLP
+through the OpenTelemetry slog bridge, from Info up, after redaction. The login
+outcome lines of every callback are kept as they were.
+
+**Privacy.** No token, code, cookie, credential, password, room ID or TURN
+username, and no client or peer address (not even in the debug records), reaches
+a span, a metric or a log record: attributes are fixed words, the SDK
+instrumentation's own address attributes are removed before export, and the
+pseudonymous login subject stays on stderr. Tests run the daemon against an
+in-process collector and assert that none of those strings is in any request
+body.
+
 ## Package `stun`
 
 The RFC 8489 message codec with the RFC 8656 TURN attributes and ChannelData
