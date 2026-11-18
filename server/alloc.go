@@ -21,11 +21,13 @@ type channel struct {
 // allocation is one TURN allocation: a relayed UDP socket plus the
 // permissions and channel bindings that gate it.
 type allocation struct {
-	s      *Server
-	key    fiveTuple
-	user   string
-	tr     transport
-	client netip.AddrPort
+	s    *Server
+	key  fiveTuple
+	user string
+	// created is when the allocation was made; MaxAllocationAge counts from it.
+	created time.Time
+	tr      transport
+	client  netip.AddrPort
 
 	relay     *net.UDPConn
 	relayAddr netip.AddrPort // the address advertised to the client

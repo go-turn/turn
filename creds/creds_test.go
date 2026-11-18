@@ -14,6 +14,42 @@ import (
 
 var t0 = time.Unix(1_800_000_000, 0)
 
+// Password derives what Verify would, minus the expiry check, and refuses the
+// same malformed or unknown-key usernames.
+func TestKeyringPasswordIgnoresExpiryOnly(t *testing.T) {
+	cur, old := []byte("0123456789abcdef-current"), []byte("fedcba9876543210-previous")
+	ring, err := NewKeyring(cur, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOnly, _ := NewKeyring(old)
+	other, _ := NewKeyring([]byte("zzzzzzzzzzzzzzzz-unknown"))
+	exp := t0.Add(time.Hour)
+	for name, tc := range map[string]struct {
+		mint *Keyring
+		want bool
+	}{
+		"current secret": {ring, true}, "previous secret": {oldOnly, true}, "unknown secret": {other, false},
+	} {
+		user, pass := tc.mint.Mint("s", exp)
+		if _, ok := ring.Verify(user, t0.Add(2*time.Hour)); ok {
+			t.Fatalf("%s: control, Verify accepted an expired username", name)
+		}
+		got, ok := ring.Password(user)
+		if ok != tc.want || (ok && got != pass) {
+			t.Errorf("%s: Password = %q, %v; want %q, %v", name, got, ok, pass, tc.want)
+		}
+		if fn, ok2 := ring.AuthExisting()(user); ok2 != tc.want || fn != got {
+			t.Errorf("%s: AuthExisting disagrees with Password", name)
+		}
+	}
+	for _, bad := range []string{"", "x", "abc:abcd.s", "01:abcd.s", "123:", "123:abc", strings.Repeat("1", 13) + ":abcd.s"} {
+		if _, ok := ring.Password(bad); ok {
+			t.Errorf("Password accepted %q", bad)
+		}
+	}
+}
+
 // RFC 2202 §3 test case 2 pins the HMAC-SHA1 primitive.
 func TestHMACKnownAnswer(t *testing.T) {
 	m := hmac.New(sha1.New, []byte("Jefe"))

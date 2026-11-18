@@ -26,6 +26,16 @@ type Config struct {
 	// identically (401).
 	Auth func(username string) (password string, ok bool)
 
+	// AuthExisting, when set, returns the password of a username WITHOUT any
+	// expiry check (creds.Keyring.AuthExisting). The server consults it only for
+	// Refresh, CreatePermission and ChannelBind on an allocation of the same
+	// 5-tuple that the same username created, and only while the allocation is
+	// younger than MaxAllocationAge: a relayed call outlives the credential that
+	// opened it, while a NEW allocation still needs an unexpired username (Auth).
+	// MESSAGE-INTEGRITY is verified with the returned password as always. Nil
+	// means an expired username ends its allocation at its next request.
+	AuthExisting func(username string) (password string, ok bool)
+
 	// Software is the SOFTWARE attribute value (default "go-turn").
 	Software string
 
@@ -51,6 +61,7 @@ type Config struct {
 	MaxAllocationsPerUser int           // per USERNAME (10)
 	DefaultLifetime       time.Duration // (10 min)
 	MaxLifetime           time.Duration // cap on any lifetime (1 h)
+	MaxAllocationAge      time.Duration // Refresh is refused, and an expired username no longer accepted, past this age (12 h)
 	MaxBytesPerSecond     int           // per allocation, both directions; -1 disables (4 MiB/s)
 	MaxPermissions        int           // per allocation (128)
 	MaxChannels           int           // per allocation (128)
@@ -124,6 +135,7 @@ func (c *Config) withDefaults() error {
 	def(&c.RelayBufSize, 4096)
 	defd(&c.DefaultLifetime, 10*time.Minute)
 	defd(&c.MaxLifetime, time.Hour)
+	defd(&c.MaxAllocationAge, 12*time.Hour)
 	defd(&c.NonceLifetime, 10*time.Minute)
 	defd(&c.IdleTimeout, 10*time.Minute)
 	defd(&c.HandshakeTimeout, 30*time.Second)

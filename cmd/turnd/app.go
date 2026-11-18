@@ -51,6 +51,9 @@ type relayConfig struct {
 	// username against the current clock and the ring of secrets and returns the
 	// password (draft-uberti-behave-turn-rest-00 section 4.2).
 	Auth func(username string) (password string, ok bool)
+	// AuthExisting is server.Config.AuthExisting: the password of a username
+	// with no expiry check, for an allocation that username already made.
+	AuthExisting func(username string) (password string, ok bool)
 	// Options are the relay's listen addresses; TLSCertFile and TLSKeyFile
 	// are the certificate for --turns-listen.
 	Options                 relayOptions

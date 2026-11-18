@@ -68,6 +68,21 @@ func TestRunRelayServesBindingAndRefusesAuthless(t *testing.T) {
 	}
 }
 
+func TestMaxAllocationAgeFlag(t *testing.T) {
+	f := RootCmd().Flags().Lookup("max-allocation-age")
+	if f == nil || f.DefValue != "12h0m0s" {
+		t.Fatalf("flag %v", f)
+	}
+	ok := relayOptions{RelayIP: "127.0.0.1", STUNListen: ":0", MaxAllocationAge: time.Hour}
+	if err := ok.validate("", ""); err != nil {
+		t.Fatal(err)
+	}
+	ok.MaxAllocationAge = -time.Second
+	if err := ok.validate("", ""); err == nil {
+		t.Fatal("a negative --max-allocation-age was accepted")
+	}
+}
+
 func TestRunRelayProxyProtocolFrom(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
