@@ -255,6 +255,8 @@ func TestPrivateDataNeverReachesTheCollector(t *testing.T) {
 		"X-Forwarded-For": "203.0.113.9", "Referer": "https://x.example/?code=SECRETCODE"})
 	get(t, srv.URL+"/login", nil)
 	ctx := context.Background()
+	logger.Info("session renewed for SUBJECT-PSEUDONYM until 2026-11-18T10:00:00Z")
+	logger.Warn("renewal refused for SUBJECT-PSEUDONYM: the token predates renewal")
 	logger.Warn("with attributes", "token", "SECRETTOKEN", "room", "ROOMCAPABILITY32HEXCHARS", "user", "1700000000:HMACUSERNAME",
 		"client", netip.MustParseAddrPort("203.0.113.9:4444"), "peer", "198.51.100.7:1234", "nested", slog.GroupValue(slog.String("addr", "203.0.113.9")),
 		"note", "198.51.100.7")
