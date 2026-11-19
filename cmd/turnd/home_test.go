@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -130,5 +131,60 @@ func TestHomeConfig(t *testing.T) {
 		if got := homeConfig(c.cfg); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", c.name, got, c.want)
 		}
+	}
+}
+
+// Every link a home page offers on its own host must work when followed as a
+// plain navigation. The pages are rendered by the REAL mux the daemon serves
+// (a stub of /login once hid a button that answered 400: /login is the
+// playground's popup flow and needs ?origin=).
+func TestHomePageLinksAnswer(t *testing.T) {
+	d := run(t)
+	hrefRe := regexp.MustCompile(`(?:href|src)="([^"]*)"`)
+	external := map[string]bool{"https://go-tex.github.io/playground/": true} // documented external link
+	followed := 0
+	for _, host := range []string{"turn.example", "stranger.example", "127.0.0.1"} {
+		for _, l := range []string{"fr", "en", "de", "es", "ja", "ko", "zh-cn"} {
+			req, _ := http.NewRequest("GET", d.base+"/", nil)
+			req.Host = host
+			req.Header.Set("Cookie", "lang="+l)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			for _, m := range hrefRe.FindAllStringSubmatch(string(b), -1) {
+				href := m[1]
+				switch {
+				case strings.HasPrefix(href, "#"), external[href]:
+					continue
+				case strings.HasPrefix(href, d.base):
+					href = strings.TrimPrefix(href, d.base)
+					if href == "" {
+						href = "/"
+					}
+				case !strings.HasPrefix(href, "/"):
+					t.Errorf("%s %s: link %q is neither same-host nor a documented external link", host, l, href)
+					continue
+				}
+				r2, _ := http.NewRequest("GET", d.base+href, nil)
+				r2.Host = host
+				c := *http.DefaultClient
+				c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+				resp2, err := c.Do(r2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp2.Body.Close()
+				followed++
+				if resp2.StatusCode >= 400 {
+					t.Errorf("%s %s: GET %s answers %d", host, l, href, resp2.StatusCode)
+				}
+			}
+		}
+	}
+	if followed == 0 {
+		t.Fatal("no link was followed")
 	}
 }
