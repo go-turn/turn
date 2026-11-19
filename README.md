@@ -59,6 +59,36 @@ with no `Origin` header is a native client. Only browser navigations stay HTTP:
 | `GET /login?origin=<allowed origin>` | starts the OIDC login (code + PKCE) in a popup; an origin not in `--allowed-origin` is a 400, never a redirect |
 | `GET /callback` | page that `postMessage`s `{type:"turnd-session",token,expires}` (or `{type:"turnd-error",error}`) to `window.opener`, target origin = the allowlisted one |
 | `GET /healthz` | `ok` |
+| `GET /` (and `HEAD`) | a home page, chosen by the `Host` header (see below); every other unknown path is a 404 |
+
+**Home pages.** `GET /` answers with a page that says what the host is, in seven
+languages (fr, en, de, es, ja, ko, zh-cn: the `lang` cookie, else
+`Accept-Language`, else French) with a light, dark or system theme, the language
+combo and the theme switch being plain GET forms (`/lang`, `/theme`) that work
+without script. The look is [go-authn/bridge](https://github.com/go-authn/bridge)'s
+(bridge#104): Tailwind v4 standalone CSS and Lucide icons, copied with their
+source commit noted in
+[`internal/homepage/web/PROVENANCE.txt`](internal/homepage/web/PROVENANCE.txt).
+The policy is strict: `default-src 'none'; script-src 'self'; style-src 'self';
+img-src 'self'`, no inline script or style.
+
+- the **collaboration page** is served on the `--public-url` host, and on any
+  host turnd does not know: what the service is (the rendezvous and session
+  service for peer-to-peer collaboration in the
+  [go-tex playground](https://go-tex.github.io/playground/)), a link to the
+  playground and a *Sign in* button to `/login`;
+- the **relay page** is served on the hosts named by `--stun-uri` and
+  `--turn-uri` (other than the public URL's): what the STUN/TURN relay is, the
+  transports it offers (UDP, TCP, TLS and their ports, from those URIs, else
+  from `--stun-listen`, `--turn-tcp-listen` and `--turns-listen`), that it is
+  not a web service to browse, and a link to the collaboration page.
+
+The pages show public configuration only: never a secret, a client address, a
+count or a session or room ID (tests assert it). Screenshots of the pages, for
+review, are written by `go test ./internal/homepage` to
+`<user config dir>/turnd/page-screenshots` (never inside a repository), in a
+headless Chrome that must be installed (`TURND_REQUIRE_BROWSER=1` makes its
+absence a failure).
 
 | RPC | token (`authorization: Bearer …` metadata, never a URL) | |
 |---|---|---|

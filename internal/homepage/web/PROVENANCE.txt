@@ -1,0 +1,22 @@
+Where these files come from
+===========================
+
+static/app.css and icons/*.svg (with icons/LICENSE, ISC and MIT, Lucide) are
+COPIED unchanged from github.com/go-authn/bridge, branch seven-languages
+(bridge#104), commit d7557518ca9851e6d5b5ef06bb64bb71ffe56e91, from
+internal/app/web/static/app.css and internal/app/web/icons/.
+
+app.css is the Tailwind v4 standalone output compiled from bridge's templates:
+it holds only the utilities those templates use, so the templates here are
+written with that vocabulary (TestTemplateClassesExistInCSS fails on a class the
+stylesheet does not define). When the page kit is extracted into a shared
+module (go-authn/bridge issue), this copy goes away.
+
+Only the icons the pages use are copied. static/logo.svg is the go-turn mark
+from github.com/go-turn/brand (svg/color/go-turn.svg). static/brand.css is this
+service's accent (rose), written here.
+
+The templates (templates/*.html), the layout's structure and the language and
+theme switches follow bridge's templates/layout.html at the same commit: a
+native <select> in a GET form (/lang) and three buttons in a GET form (/theme)
+that work without script; /ui.js only submits the form on change.
