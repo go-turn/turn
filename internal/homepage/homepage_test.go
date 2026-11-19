@@ -19,7 +19,7 @@ func testConfig() Config {
 	return Config{
 		CollabHost: collabHost, TurnHosts: []string{turnHost},
 		CollabURL:  "https://" + collabHost,
-		Transports: []Transport{{"udp", "3478"}, {"tcp", "3478"}, {"tls", "443"}},
+		Transports: []Transport{{"udp", "3478"}, {"tls", "443"}},
 		Secure:     true,
 	}
 }
@@ -93,7 +93,7 @@ func TestPageByHost(t *testing.T) {
 		t.Error("collab page is the relay's")
 	}
 	_, turn := do(t, s, "GET", turnHost+":8081", "/", map[string]string{"Cookie": "lang=en"})
-	for _, want := range []string{"STUN/TURN relay", "not a web service to browse", "UDP", "TCP", "TLS (turns:)", "port 3478", "port 443", `href="https://` + collabHost + `"`} {
+	for _, want := range []string{"STUN/TURN relay", "not a web service to browse", "UDP", "TLS (turns:)", "port 3478", "port 443", `href="https://` + collabHost + `"`} {
 		if !strings.Contains(turn, want) {
 			t.Errorf("turn page lacks %q", want)
 		}

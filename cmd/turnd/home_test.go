@@ -113,6 +113,17 @@ func TestHomeConfig(t *testing.T) {
 		{"listen ports", config{PublicURL: "https://c.example", Relay: relayOptions{STUNListen: ":3478", TURNTCPListen: "0.0.0.0:3479", TURNSListen: "[::]:443"}},
 			homepage.Config{CollabHost: "c.example", CollabURL: "https://c.example", Secure: true,
 				Transports: []homepage.Transport{tp("udp", "3478"), tp("tcp", "3479"), tp("tls", "443")}}},
+		// The VM: the TCP listener is loopback behind Caddy, and only the URIs are published.
+		{"vm", config{PublicURL: "https://collab.mesocentre.plateau-de-saclay.net",
+			Relay:    relayOptions{STUNListen: "157.136.250.7:3478", TURNTCPListen: "127.0.0.1:3478"},
+			STUNURLs: []string{"stun:turn.mesocentre.plateau-de-saclay.net:3478"},
+			TURNURLs: []string{"turn:turn.mesocentre.plateau-de-saclay.net:3478?transport=udp", "turns:turn.mesocentre.plateau-de-saclay.net:443?transport=tcp"}},
+			homepage.Config{CollabHost: "collab.mesocentre.plateau-de-saclay.net", CollabURL: "https://collab.mesocentre.plateau-de-saclay.net", Secure: true,
+				TurnHosts:  []string{"turn.mesocentre.plateau-de-saclay.net"},
+				Transports: []homepage.Transport{tp("udp", "3478"), tp("tls", "443")}}},
+		{"loopback and private listeners are not offered", config{PublicURL: "https://c.example",
+			Relay: relayOptions{STUNListen: "10.0.0.5:3478", TURNTCPListen: "127.0.0.1:3478", TURNSListen: "[::1]:443"}},
+			homepage.Config{CollabHost: "c.example", CollabURL: "https://c.example", Secure: true}},
 		{"nothing", config{PublicURL: "https://c.example"}, homepage.Config{CollabHost: "c.example", CollabURL: "https://c.example", Secure: true}},
 	}
 	for _, c := range cases {

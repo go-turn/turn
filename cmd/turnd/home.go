@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 
@@ -75,12 +76,22 @@ func homeConfig(cfg config) homepage.Config {
 			add("tls", port)
 		}
 	}
-	if len(hc.Transports) == 0 {
+	// The listen flags are only a fallback when no URI is configured: behind a
+	// proxy they name private sockets, not what clients are offered. Even then a
+	// loopback, private or link-local bind address is never listed.
+	if len(cfg.STUNURLs)+len(cfg.TURNURLs) == 0 {
 		portOf := func(listen string) string {
-			if _, p, err := net.SplitHostPort(listen); err == nil {
-				return p
+			host, p, err := net.SplitHostPort(listen)
+			if err != nil {
+				return ""
 			}
-			return ""
+			if ip, err := netip.ParseAddr(host); err == nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
+				return ""
+			}
+			if host == "localhost" {
+				return ""
+			}
+			return p
 		}
 		add("udp", portOf(cfg.Relay.STUNListen))
 		add("tcp", portOf(cfg.Relay.TURNTCPListen))
