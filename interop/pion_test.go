@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/turn/v4"
+	"github.com/pion/turn/v5"
 
 	"github.com/go-turn/turn/server"
 )

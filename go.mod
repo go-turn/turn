@@ -9,7 +9,7 @@ require (
 	github.com/go-authn/rp v0.4.0
 	github.com/grpc-transports/websocket v0.4.0
 	github.com/pion/logging v0.2.4
-	github.com/pion/turn/v4 v4.1.4
+	github.com/pion/turn/v5 v5.1.3
 	github.com/spf13/cobra v1.10.2
 	go.opentelemetry.io/contrib/bridges/otelslog v0.21.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.72.0
@@ -40,11 +40,10 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/pion/dtls/v3 v3.0.7 // indirect
+	github.com/pion/dtls/v3 v3.1.9 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/stun/v3 v3.0.1 // indirect
-	github.com/pion/transport/v3 v3.0.8 // indirect
-	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/pion/stun/v4 v4.0.1 // indirect
+	github.com/pion/transport/v5 v5.1.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
