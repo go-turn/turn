@@ -84,7 +84,7 @@ func TestEveryHostAndLanguageIs200(t *testing.T) {
 func TestPageByHost(t *testing.T) {
 	s := newServer(t, testConfig())
 	_, collab := do(t, s, "GET", collabHost, "/", map[string]string{"Cookie": "lang=en"})
-	for _, want := range []string{"rendezvous and session service", `href="https://go-tex.github.io/playground/"`, `href="/login"`, "Sign in", "admits each guest"} {
+	for _, want := range []string{"rendezvous and session service", `href="https://go-tex.github.io/playground/"`, "The host signs in from the playground", "admits each guest"} {
 		if !strings.Contains(collab, want) {
 			t.Errorf("collab page lacks %q", want)
 		}
@@ -98,8 +98,10 @@ func TestPageByHost(t *testing.T) {
 			t.Errorf("turn page lacks %q", want)
 		}
 	}
-	if strings.Contains(turn, `href="/login"`) {
-		t.Error("turn page offers the sign-in")
+	for _, p := range []string{collab, turn} {
+		if strings.Contains(p, `href="/login"`) {
+			t.Error("a page links /login, which needs ?origin= from the playground")
+		}
 	}
 	// An unknown host, and a host both lists name, get the collaboration page.
 	_, unk := do(t, s, "GET", "Elsewhere.example.net", "/", map[string]string{"Cookie": "lang=en"})

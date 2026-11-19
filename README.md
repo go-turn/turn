@@ -76,7 +76,8 @@ img-src 'self'`, no inline script or style.
   host turnd does not know: what the service is (the rendezvous and session
   service for peer-to-peer collaboration in the
   [go-tex playground](https://go-tex.github.io/playground/)), a link to the
-  playground and a *Sign in* button to `/login`;
+  playground and a sentence saying the host signs in from the playground (which
+  opens `/login?origin=…` in a popup; a bare `/login` is a 400, so no page links it);
 - the **relay page** is served on the hosts named by `--stun-uri` and
   `--turn-uri` (other than the public URL's): what the STUN/TURN relay is, the
   transports it offers (UDP, TCP, TLS and their ports, from those URIs, else

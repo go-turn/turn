@@ -5,6 +5,14 @@ raises the MINOR. Releases are tagged on GitHub.
 
 ## Unreleased
 
+### Fixed
+
+- The collaboration page's *Sign in* button linked `/login`, which answers 400
+  `origin not allowed` without the playground's `?origin=`. The button is gone;
+  the page says the host signs in from the playground. `TestHomePageLinksAnswer`
+  renders every page from the daemon's real mux and follows each same-host link
+  (it was red on v0.8.0 with `/login`).
+
 ### Added
 
 - turnd serves a home page at `GET /` (and `HEAD`), chosen by the `Host`

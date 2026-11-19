@@ -137,7 +137,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "L'hôte admet chaque invité avant qu'il ne participe.",
 		"collab.direct":     "Les échanges passent directement d'un participant à l'autre, ou par le relais quand ce n'est pas possible.",
 		"collab.playground": "Ouvrir le playground",
-		"collab.signin":     "Se connecter",
+		"collab.signinhint": "L'hôte se connecte depuis le playground, qui ouvre la fenêtre de connexion.",
 
 		"turn.title":        "Relais STUN/TURN",
 		"turn.h1":           "Relais STUN/TURN",
@@ -166,7 +166,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "The host admits each guest before they take part.",
 		"collab.direct":     "Traffic goes directly from one participant to another, or through the relay when it cannot.",
 		"collab.playground": "Open the playground",
-		"collab.signin":     "Sign in",
+		"collab.signinhint": "The host signs in from the playground, which opens the sign-in window.",
 
 		"turn.title":        "STUN/TURN relay",
 		"turn.h1":           "STUN/TURN relay",
@@ -195,7 +195,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "Der Host lässt jeden Gast zu, bevor er teilnimmt.",
 		"collab.direct":     "Der Datenverkehr läuft direkt von Teilnehmer zu Teilnehmer, oder über das Relay, wenn das nicht möglich ist.",
 		"collab.playground": "Playground öffnen",
-		"collab.signin":     "Anmelden",
+		"collab.signinhint": "Der Host meldet sich im Playground an, das das Anmeldefenster öffnet.",
 
 		"turn.title":        "STUN/TURN-Relay",
 		"turn.h1":           "STUN/TURN-Relay",
@@ -224,7 +224,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "El anfitrión admite a cada invitado antes de que participe.",
 		"collab.direct":     "El tráfico pasa directamente de un participante a otro, o por el relé cuando no es posible.",
 		"collab.playground": "Abrir el playground",
-		"collab.signin":     "Iniciar sesión",
+		"collab.signinhint": "El anfitrión inicia sesión desde el playground, que abre la ventana de inicio de sesión.",
 
 		"turn.title":        "Relé STUN/TURN",
 		"turn.h1":           "Relé STUN/TURN",
@@ -253,7 +253,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "ホストが各ゲストの参加を承認します。",
 		"collab.direct":     "通信は参加者どうしで直接行われ、直接つながらない場合はリレーを経由します。",
 		"collab.playground": "プレイグラウンドを開く",
-		"collab.signin":     "サインイン",
+		"collab.signinhint": "ホストはプレイグラウンドからサインインします。サインイン用のウィンドウはプレイグラウンドが開きます。",
 
 		"turn.title":        "STUN/TURN リレー",
 		"turn.h1":           "STUN/TURN リレー",
@@ -282,7 +282,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "호스트가 각 게스트의 참여를 승인합니다.",
 		"collab.direct":     "통신은 참가자끼리 직접 오가며, 직접 연결할 수 없을 때는 릴레이를 거칩니다.",
 		"collab.playground": "플레이그라운드 열기",
-		"collab.signin":     "로그인",
+		"collab.signinhint": "호스트는 플레이그라운드에서 로그인하며, 로그인 창은 플레이그라운드가 엽니다.",
 
 		"turn.title":        "STUN/TURN 릴레이",
 		"turn.h1":           "STUN/TURN 릴레이",
@@ -311,7 +311,7 @@ var catalogue = map[string]map[string]string{
 		"collab.how.3":      "主持人先批准每位访客，访客才能参与。",
 		"collab.direct":     "数据在参与者之间直接传输；无法直连时经由中继转发。",
 		"collab.playground": "打开在线编辑器",
-		"collab.signin":     "登录",
+		"collab.signinhint": "主持人在在线编辑器中登录，登录窗口由在线编辑器打开。",
 
 		"turn.title":        "STUN/TURN 中继",
 		"turn.h1":           "STUN/TURN 中继",
