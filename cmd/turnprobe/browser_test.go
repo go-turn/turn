@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestParseCandidate(t *testing.T) {
 			t.Errorf("%q parsed as %+v", g.line, c)
 		}
 	}
-	for _, bad := range []string{"", "candidate:1 1 udp 1 1.2.3.4 5 relay", "foo bar", "candidate:1 1 udp 1 1.2.3.4 5 typ"} {
+	for _, bad := range []string{"", "candidate:1 1 udp 1 1.2.3.4 5 relay", "candidate:1 1 udp 1 1.2.3.4 typ relay", "foo bar", "candidate:1 1 udp 1 1.2.3.4 5 typ"} {
 		if _, err := parseCandidate(bad); err == nil {
 			t.Errorf("%q parsed", bad)
 		}
@@ -137,6 +138,41 @@ func TestBrowserFlags(t *testing.T) {
 	_, err := runCLI("--browser")
 	if err == nil || !strings.Contains(err.Error(), "--server, --username, --password-file") || strings.Contains(err.Error(), "--realm") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestBrowserModeRefusals(t *testing.T) {
+	pw := filepath.Join(t.TempDir(), "pw")
+	if err := os.WriteFile(pw, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--browser", "--username", "u", "--password-file", pw}
+	if _, err := runCLI(append(base, "--server", "turns:h:443?transport=tcp", "--timeout", "0s")...); err == nil || !strings.Contains(err.Error(), "--timeout must be positive") {
+		t.Errorf("timeout 0: %v", err)
+	}
+	if _, err := runCLI(append(base, "--server", "http://h")...); err == nil || !strings.Contains(err.Error(), "--server") {
+		t.Errorf("bad server: %v", err)
+	}
+	if _, err := runCLI("--browser", "--username", "u", "--password-file", pw+".missing", "--server", "turn:h"); err == nil || !strings.Contains(err.Error(), "--password-file") {
+		t.Errorf("missing password file: %v", err)
+	}
+}
+
+// A Chrome that cannot start is a FAIL line and a non-zero exit, never a pass,
+// and the ALPN measurement says its run failed instead of reporting "none".
+func TestBrowserUnstartableChromeFails(t *testing.T) {
+	targets := []target{{Raw: "turns:h:443?transport=tcp", Scheme: "turns", Host: "h", Port: "443", Transport: "tcp"}}
+	var out bytes.Buffer
+	err := runBrowser(context.Background(), &out, browserRun{
+		Targets: targets, Username: "u", Password: "p", ALPN: true,
+		Opts: browserOptions{ChromePath: filepath.Join(t.TempDir(), "no-such-chrome"), Timeout: time.Second},
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 of 1 servers failed") {
+		t.Errorf("err = %v", err)
+	}
+	s := out.String()
+	if !strings.HasPrefix(s, "FAIL turns:h:443?transport=tcp") || !strings.Contains(s, "ALPN listener=") || !strings.Contains(s, "chrome run failed") {
+		t.Errorf("output:\n%s", s)
 	}
 }
 
