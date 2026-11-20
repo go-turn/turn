@@ -120,10 +120,7 @@ func runBrowserMode(ctx context.Context, out io.Writer, o runOptions, alpn bool,
 	if err != nil {
 		return fmt.Errorf("--password-file: %w", err)
 	}
-	return runBrowser(ctx, out, browserRun{
-		Targets: targets, Username: o.Username, Password: pw, ALPN: alpn,
-		Opts: browserOptions{ChromePath: chromePath, Timeout: o.Timeout},
-	})
+	return startBrowser(ctx, out, targets, o.Username, pw, alpn, chromePath, o.Timeout)
 }
 
 type runOptions struct {

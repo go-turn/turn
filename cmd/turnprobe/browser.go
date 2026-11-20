@@ -1,3 +1,5 @@
+//go:build !js
+
 package main
 
 import (
@@ -295,6 +297,13 @@ func helloListener(log *helloLog) (addr string, stop func(), err error) {
 		}
 	}()
 	return ln.Addr().String(), func() { _ = ln.Close() }, nil
+}
+
+func startBrowser(ctx context.Context, out io.Writer, targets []target, username, password string, alpn bool, chromePath string, timeout time.Duration) error {
+	return runBrowser(ctx, out, browserRun{
+		Targets: targets, Username: username, Password: password, ALPN: alpn,
+		Opts: browserOptions{ChromePath: chromePath, Timeout: timeout},
+	})
 }
 
 type browserRun struct {
