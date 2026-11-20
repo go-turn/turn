@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,8 +26,9 @@ func TestReadPasswordBounds(t *testing.T) {
 		t.Errorf("4097 bytes: err=%v", err)
 	}
 	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-		if _, err := readPassword(write("wo", 5, 0o200)); err == nil {
-			t.Error("an unreadable file was read")
+		// The read error itself is returned, not the "empty" refusal after it.
+		if _, err := readPassword(write("wo", 5, 0o200)); !errors.Is(err, fs.ErrPermission) {
+			t.Errorf("an unreadable file: %v", err)
 		}
 	}
 }
