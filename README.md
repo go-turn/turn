@@ -516,6 +516,26 @@ One line per server, `PASS` or `FAIL` with the stage that failed (`connect`,
 is 1 if any failed. `--realm` is turnd's `--realm`; a mismatch is reported at
 `allocate`.
 
+### Asking a real browser: `turnprobe --browser`
+
+The Go probe sends no ALPN and is not a browser. `--browser` starts a headless
+Chrome (chromedp), loads `about:blank`, and there creates an `RTCPeerConnection`
+with `iceServers=[{urls, username, credential}]` and `iceTransportPolicy: "relay"`,
+a data channel and an offer. It PASSes iff Chrome gathers a candidate of type
+`relay`; it prints the relay address and the Chrome version, and on a FAIL the
+`icecandidateerror` events. The credential goes to the page through the DevTools
+evaluation, never a URL or a command line. `--realm` is not needed.
+
+```sh
+turnprobe --browser --username "$U" --password-file ./probe.pw \
+  --server 'turns:turn.example.org:443?transport=tcp' \
+  --server 'turn:turn.example.org:3478?transport=udp'
+```
+
+`--alpn` also measures what Chrome's TURN/TLS ClientHello offers: a second Chrome
+run points at a loopback TLS listener that logs each ClientHello's ALPN (RFC 7443
+defines `stun.turn`) and speaks no TURN. `--chrome` names the binary.
+
 ## Licence
 
 BSD-3-Clause.
