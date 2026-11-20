@@ -39,6 +39,9 @@ func main() {
 	}
 }
 
+// chromeFlags are the --chrome-flag switches of the browser lane.
+var chromeFlags []string
+
 // probeCfg is replaceable by tests that need a root pool for turns:.
 var probeCfg = probeConfig{}
 
@@ -86,6 +89,7 @@ func RootCmd() *cobra.Command {
 	f.DurationVar(&timeout, "timeout", 10*time.Second, "time allowed for each stage")
 	f.BoolVar(&browserMode, "browser", false, "ask a headless Chrome instead: an RTCPeerConnection (relay only) must gather a relay candidate; --realm is not needed")
 	f.BoolVar(&alpn, "alpn", false, "with --browser: also record the ALPN Chrome offers, against a local TLS listener")
+	f.StringArrayVar(&chromeFlags, "chrome-flag", nil, "with --browser: a Chrome command-line switch, name or name=value without the dashes (repeat), e.g. host-resolver-rules=\"MAP turn.test 127.0.0.1\" or ignore-certificate-errors-spki-list=<base64 sha256>, to reach a local or staging server")
 	f.StringVar(&chromePath, "chrome", "", "with --browser: the Chrome binary (default: found on the system)")
 	return cmd
 }

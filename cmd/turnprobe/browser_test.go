@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,33 @@ func TestBrowserUnstartableChromeFails(t *testing.T) {
 	s := out.String()
 	if !strings.HasPrefix(s, "FAIL turns:h:443?transport=tcp") || !strings.Contains(s, "ALPN listener=") || !strings.Contains(s, "chrome run failed") {
 		t.Errorf("output:\n%s", s)
+	}
+}
+
+// The --chrome-flag switches reach Chrome: a host-resolver-rules mapping makes
+// a name that resolves nowhere reach the listener, with that name as the SNI.
+func TestChromeFlagReachesChrome(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	log := &helloLog{}
+	addr, stop, err := helloListener(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	_, port, _ := net.SplitHostPort(addr)
+	o := browserOptions{ChromePath: os.Getenv("TURNPROBE_CHROME"), Timeout: 5 * time.Second, NoSandbox: os.Getenv("CI") != "",
+		Flags: []string{"--host-resolver-rules=MAP turn.chromeflag.test 127.0.0.1"}}
+	_, _, err = o.gather(ctx, pageConfig{URLs: []string{"turns:turn.chromeflag.test:" + port + "?transport=tcp"}, Username: "u", Credential: "c", TimeoutMs: 5000})
+	if err != nil {
+		if os.Getenv("TURNPROBE_REQUIRE_BROWSER") != "" {
+			t.Fatalf("no Chrome: %v", err)
+		}
+		t.Skipf("no Chrome: %v", err)
+	}
+	h := log.all()
+	if len(h) == 0 || h[0].ServerName != "turn.chromeflag.test" {
+		t.Errorf("hellos: %+v", h)
 	}
 }
 
