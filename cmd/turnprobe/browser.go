@@ -118,11 +118,19 @@ func (v browserVerdict) line(raw, chrome string) string {
 		raw, v.State, v.Other, v.Unparsed, chrome, detail)
 }
 
+// Seams, replaced by tests that make the failure branches happen.
+var (
+	marshalJSON = json.Marshal
+	genKey      = func() (*ecdsa.PrivateKey, error) { return ecdsa.GenerateKey(elliptic.P256(), rand.Reader) }
+	createCert  = x509.CreateCertificate
+	listenTCP   = net.Listen
+)
+
 // pageScript builds the expression run in the page. The configuration travels
 // as a JSON literal in the DevTools message (Runtime.evaluate), never in a URL
 // or a command line: the page is about:blank.
 func pageScript(cfg pageConfig) (string, error) {
-	b, err := json.Marshal(cfg)
+	b, err := marshalJSON(cfg)
 	if err != nil {
 		return "", err
 	}
@@ -265,7 +273,7 @@ func summarizeALPN(h []helloRecord) string {
 // helloListener is a TLS listener on loopback with a throwaway certificate. It
 // completes no TURN: it only logs what Chrome's ClientHello carries.
 func helloListener(log *helloLog) (addr string, stop func(), err error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := genKey()
 	if err != nil {
 		return "", nil, err
 	}
@@ -274,7 +282,7 @@ func helloListener(log *helloLog) (addr string, stop func(), err error) {
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	der, err := createCert(rand.Reader, tpl, tpl, &key.PublicKey, key)
 	if err != nil {
 		return "", nil, err
 	}
@@ -285,7 +293,7 @@ func helloListener(log *helloLog) (addr string, stop func(), err error) {
 			return nil, nil
 		},
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listenTCP("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
 	}

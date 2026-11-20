@@ -5,7 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -174,6 +178,76 @@ func TestBrowserUnstartableChromeFails(t *testing.T) {
 	s := out.String()
 	if !strings.HasPrefix(s, "FAIL turns:h:443?transport=tcp") || !strings.Contains(s, "ALPN listener=") || !strings.Contains(s, "chrome run failed") {
 		t.Errorf("output:\n%s", s)
+	}
+}
+
+var errFake = errors.New("fake failure")
+
+func TestPageScriptMarshalFailure(t *testing.T) {
+	old := marshalJSON
+	marshalJSON = func(any) ([]byte, error) { return nil, errFake }
+	defer func() { marshalJSON = old }()
+	if s, err := pageScript(pageConfig{}); !errors.Is(err, errFake) || s != "" {
+		t.Errorf("s=%q err=%v", s, err)
+	}
+	// gather stops there, before it starts a Chrome.
+	o := browserOptions{ChromePath: filepath.Join(t.TempDir(), "never-started"), Timeout: time.Second}
+	if _, chrome, err := o.gather(context.Background(), pageConfig{}); !errors.Is(err, errFake) || chrome != "" {
+		t.Errorf("gather: chrome=%q err=%v", chrome, err)
+	}
+}
+
+func TestHelloListenerFailureBranches(t *testing.T) {
+	oldK, oldC, oldL := genKey, createCert, listenTCP
+	defer func() { genKey, createCert, listenTCP = oldK, oldC, oldL }()
+	log := &helloLog{}
+
+	genKey = func() (*ecdsa.PrivateKey, error) { return nil, errFake }
+	if addr, stop, err := helloListener(log); !errors.Is(err, errFake) || addr != "" || stop != nil {
+		t.Errorf("genKey: %q %v %v", addr, stop != nil, err)
+	}
+	genKey = oldK
+
+	createCert = func(io.Reader, *x509.Certificate, *x509.Certificate, any, any) ([]byte, error) { return nil, errFake }
+	if _, stop, err := helloListener(log); !errors.Is(err, errFake) || stop != nil {
+		t.Errorf("createCert: %v", err)
+	}
+	createCert = oldC
+
+	listenTCP = func(string, string) (net.Listener, error) { return nil, errFake }
+	if _, stop, err := helloListener(log); !errors.Is(err, errFake) || stop != nil {
+		t.Errorf("listen: %v", err)
+	}
+	// ...and runBrowser reports it instead of going on without a listener.
+	var out bytes.Buffer
+	err := runBrowser(context.Background(), &out, browserRun{ALPN: true, Opts: browserOptions{Timeout: time.Second}})
+	if err == nil || !errors.Is(err, errFake) || !strings.Contains(err.Error(), "alpn listener") {
+		t.Errorf("runBrowser: %v", err)
+	}
+}
+
+// A page that throws (an unparseable iceServers url) is an error from gather,
+// with the Chrome version still reported.
+func TestGatherPageException(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	o := browserOptions{ChromePath: os.Getenv("TURNPROBE_CHROME"), Timeout: 2 * time.Second, NoSandbox: os.Getenv("CI") != ""}
+	_, chrome, err := o.gather(ctx, pageConfig{URLs: []string{"not a turn url"}, TimeoutMs: 1000})
+	if err == nil {
+		t.Fatal("a page exception passed")
+	}
+	if !strings.Contains(err.Error(), "exception") && !strings.Contains(strings.ToLower(err.Error()), "syntax") {
+		// no Chrome at all reads differently: it never got to the page.
+		if chrome == "" {
+			if os.Getenv("TURNPROBE_REQUIRE_BROWSER") != "" {
+				t.Fatalf("no Chrome: %v", err)
+			}
+			t.Skipf("no Chrome: %v", err)
+		}
+		t.Errorf("unexpected error: %v", err)
+	}
+	if chrome == "" {
+		t.Error("the Chrome version was not reported")
 	}
 }
 
