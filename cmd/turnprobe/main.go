@@ -50,6 +50,9 @@ func RootCmd() *cobra.Command {
 		passwordFile string
 		realm        string
 		timeout      time.Duration
+		browserMode  bool
+		alpn         bool
+		chromePath   string
 	)
 	cmd := &cobra.Command{
 		Use:   "turnprobe",
@@ -66,6 +69,12 @@ func RootCmd() *cobra.Command {
 			if ctx == nil {
 				ctx = context.Background()
 			}
+			if alpn && !browserMode {
+				return errors.New("--alpn needs --browser")
+			}
+			if browserMode {
+				return runBrowserMode(ctx, cmd.OutOrStdout(), runOptions{servers, username, passwordFile, realm, timeout}, alpn, chromePath)
+			}
 			return run(ctx, cmd.OutOrStdout(), runOptions{servers, username, passwordFile, realm, timeout})
 		},
 	}
@@ -75,7 +84,46 @@ func RootCmd() *cobra.Command {
 	f.StringVar(&passwordFile, "password-file", "", "file holding the TURN password")
 	f.StringVar(&realm, "realm", "", "the relay's realm (turnd --realm, default the public URL's host)")
 	f.DurationVar(&timeout, "timeout", 10*time.Second, "time allowed for each stage")
+	f.BoolVar(&browserMode, "browser", false, "ask a headless Chrome instead: an RTCPeerConnection (relay only) must gather a relay candidate; --realm is not needed")
+	f.BoolVar(&alpn, "alpn", false, "with --browser: also record the ALPN Chrome offers, against a local TLS listener")
+	f.StringVar(&chromePath, "chrome", "", "with --browser: the Chrome binary (default: found on the system)")
 	return cmd
+}
+
+// runBrowserMode validates the flags of the browser lane and runs it.
+func runBrowserMode(ctx context.Context, out io.Writer, o runOptions, alpn bool, chromePath string) error {
+	var missing []string
+	if len(o.Servers) == 0 {
+		missing = append(missing, "--server")
+	}
+	if o.Username == "" {
+		missing = append(missing, "--username")
+	}
+	if o.PasswordFile == "" {
+		missing = append(missing, "--password-file")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required flag(s): %s", strings.Join(missing, ", "))
+	}
+	if o.Timeout <= 0 {
+		return errors.New("--timeout must be positive")
+	}
+	targets := make([]target, len(o.Servers))
+	for i, s := range o.Servers {
+		t, err := parseServer(s)
+		if err != nil {
+			return fmt.Errorf("--server %w", err)
+		}
+		targets[i] = t
+	}
+	pw, err := readPassword(o.PasswordFile)
+	if err != nil {
+		return fmt.Errorf("--password-file: %w", err)
+	}
+	return runBrowser(ctx, out, browserRun{
+		Targets: targets, Username: o.Username, Password: pw, ALPN: alpn,
+		Opts: browserOptions{ChromePath: chromePath, Timeout: o.Timeout},
+	})
 }
 
 type runOptions struct {
