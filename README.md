@@ -534,7 +534,9 @@ turnprobe --browser --username "$U" --password-file ./probe.pw \
 
 `--alpn` also measures what Chrome's TURN/TLS ClientHello offers: a second Chrome
 run points at a loopback TLS listener that logs each ClientHello's ALPN (RFC 7443
-defines `stun.turn`) and speaks no TURN. `--chrome` names the binary.
+defines `stun.turn`) and speaks no TURN. `--chrome` names the binary; `--chrome-flag name[=value]` (repeat) passes a Chrome
+switch, e.g. `host-resolver-rules` or `ignore-certificate-errors-spki-list` to reach
+a local or staging server behind a private CA.
 
 ## Licence
 

@@ -159,6 +159,7 @@ const pageFunc = `async (cfg) => {
 type browserOptions struct {
 	ChromePath string
 	NoSandbox  bool
+	Flags      []string // extra switches, "name" or "name=value"
 	Timeout    time.Duration
 }
 
@@ -170,6 +171,14 @@ func (o browserOptions) allocator(ctx context.Context) (context.Context, context
 	}
 	if o.NoSandbox || os.Geteuid() == 0 {
 		opts = append(opts, chromedp.Flag("no-sandbox", true))
+	}
+	for _, f := range o.Flags {
+		name, val, hasVal := strings.Cut(strings.TrimLeft(f, "-"), "=")
+		if hasVal {
+			opts = append(opts, chromedp.Flag(name, val))
+		} else {
+			opts = append(opts, chromedp.Flag(name, true))
+		}
 	}
 	return chromedp.NewExecAllocator(ctx, opts...)
 }
@@ -302,7 +311,7 @@ func helloListener(log *helloLog) (addr string, stop func(), err error) {
 func startBrowser(ctx context.Context, out io.Writer, targets []target, username, password string, alpn bool, chromePath string, timeout time.Duration) error {
 	return runBrowser(ctx, out, browserRun{
 		Targets: targets, Username: username, Password: password, ALPN: alpn,
-		Opts: browserOptions{ChromePath: chromePath, Timeout: timeout},
+		Opts: browserOptions{ChromePath: chromePath, Flags: chromeFlags, Timeout: timeout},
 	})
 }
 
