@@ -3,8 +3,8 @@ module github.com/go-turn/turn
 go 1.27.4
 
 require (
-	github.com/chromedp/cdproto v0.159.0
-	github.com/chromedp/chromedp v0.21.1
+	github.com/chromedp/cdproto v0.160.7
+	github.com/chromedp/chromedp v0.24.0
 	github.com/go-authn/oidc v0.7.0
 	github.com/go-authn/rp v0.4.0
 	github.com/grpc-transports/websocket v0.4.0
@@ -25,7 +25,7 @@ require (
 	go.opentelemetry.io/otel/sdk/log v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	go.opentelemetry.io/proto/otlp v1.11.0
+	go.opentelemetry.io/proto/otlp v1.11.1
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -38,7 +38,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/pion/dtls/v3 v3.0.7 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
