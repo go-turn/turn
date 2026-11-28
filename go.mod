@@ -3,10 +3,10 @@ module github.com/go-turn/turn
 go 1.27.4
 
 require (
-	github.com/chromedp/cdproto v0.160.8
+	github.com/chromedp/cdproto v0.160.12
 	github.com/chromedp/chromedp v0.24.0
 	github.com/go-authn/oidc v0.8.1
-	github.com/go-authn/rp v0.5.1
+	github.com/go-authn/rp v0.6.0
 	github.com/grpc-transports/websocket v0.4.0
 	github.com/pion/logging v0.2.4
 	github.com/pion/turn/v4 v4.1.4
